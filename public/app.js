@@ -37,8 +37,51 @@ function generateSessionId() {
 
 // ── Session Persistence ───────────────────────────────────────────────
 const SESSION_KEY = "aws-secrets-editor-session";
+const SESSION_KEY_CHECK = "aws-secrets-editor-session-check";
 
-function saveSession() {
+// In-memory encryption key (lost on tab close, never stored)
+let encryptionKey = null;
+
+async function getEncryptionKey() {
+  if (encryptionKey) return encryptionKey;
+  encryptionKey = await crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    false, // not extractable
+    ["encrypt", "decrypt"]
+  );
+  return encryptionKey;
+}
+
+async function encryptData(plaintext) {
+  const key = await getEncryptionKey();
+  const encoder = new TextEncoder();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    encoder.encode(plaintext)
+  );
+  // Store IV + ciphertext as base64
+  const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(ciphertext), iv.length);
+  return btoa(String.fromCharCode(...combined));
+}
+
+async function decryptData(encoded) {
+  const key = await getEncryptionKey();
+  const combined = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
+  const iv = combined.slice(0, 12);
+  const ciphertext = combined.slice(12);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    ciphertext
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+async function saveSession() {
   try {
     let editorContent = null;
     if (editor) {
@@ -56,9 +99,10 @@ function saveSession() {
       editorContent,
       timestamp: Date.now(),
     };
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+    const encrypted = await encryptData(JSON.stringify(state));
+    sessionStorage.setItem(SESSION_KEY, encrypted);
   } catch {
-    // Ignore serialization errors
+    // Ignore serialization/encryption errors
   }
 }
 
@@ -71,12 +115,15 @@ function clearSession() {
   sessionStorage.removeItem(SESSION_KEY);
 }
 
-function getSavedSession() {
+async function getSavedSession() {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const decrypted = await decryptData(raw);
+    return JSON.parse(decrypted);
   } catch {
+    // Decryption fails if key changed (new tab) — expected behavior
+    clearSession();
     return null;
   }
 }
