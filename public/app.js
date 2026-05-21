@@ -37,18 +37,64 @@ function generateSessionId() {
 
 // ── Session Persistence ───────────────────────────────────────────────
 const SESSION_KEY = "aws-secrets-editor-session";
-const SESSION_KEY_CHECK = "aws-secrets-editor-session-check";
+const IDB_NAME = "aws-secrets-editor";
+const IDB_STORE = "keys";
+const IDB_KEY_ID = "session-encryption-key";
 
-// In-memory encryption key (lost on tab close, never stored)
+// In-memory cache of the encryption key
 let encryptionKey = null;
+
+function openKeyStore() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
 
 async function getEncryptionKey() {
   if (encryptionKey) return encryptionKey;
+
+  // Try to load existing key from IndexedDB
+  try {
+    const db = await openKeyStore();
+    const existing = await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(IDB_KEY_ID);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    if (existing) {
+      encryptionKey = existing;
+      return encryptionKey;
+    }
+  } catch {
+    // IndexedDB unavailable — fall through to generate new key
+  }
+
+  // Generate a new key
   encryptionKey = await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
     false, // not extractable
     ["encrypt", "decrypt"]
   );
+
+  // Persist to IndexedDB (survives refresh, cleared on tab close via clearSession)
+  try {
+    const db = await openKeyStore();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const req = tx.objectStore(IDB_STORE).put(encryptionKey, IDB_KEY_ID);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    // Non-critical — key still works in memory for this page lifetime
+  }
+
   return encryptionKey;
 }
 
@@ -113,6 +159,14 @@ function debouncedSaveSession() {
 
 function clearSession() {
   sessionStorage.removeItem(SESSION_KEY);
+  encryptionKey = null;
+  // Clean up IndexedDB key
+  openKeyStore()
+    .then((db) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).delete(IDB_KEY_ID);
+    })
+    .catch(() => {});
 }
 
 async function getSavedSession() {
