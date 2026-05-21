@@ -183,7 +183,7 @@ async function getSavedSession() {
 }
 
 async function restoreSession() {
-  const saved = getSavedSession();
+  const saved = await getSavedSession();
   if (!saved || !saved.sessionId || !saved.currentEnvId) return false;
 
   // Validate the backend session is still alive
