@@ -243,6 +243,28 @@
     .version-stage.current { background: #dcfce7; color: #166534; }
     .version-stage.previous { background: #fef3c7; color: #92400e; }
 
+    .version-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .version-item-row input[type="checkbox"] {
+      margin-top: 3px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .version-item-content {
+      flex: 1;
+      min-width: 0;
+      cursor: pointer;
+    }
+
+    .version-item.selected {
+      background: #dbeafe;
+    }
+
     /* Diff modal */
     .modal-overlay {
       display: none;
@@ -413,9 +435,17 @@
           </div>
           <div class="editor-sidebar">
             <h3 style="font-size: 0.9rem; margin-bottom: 12px;">Version History</h3>
-            <button class="btn-secondary btn-sm" onclick="loadVersionHistory()" style="margin-bottom: 12px;">
-              Refresh History
-            </button>
+            <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">
+              <button class="btn-secondary btn-sm" onclick="loadVersionHistory()">
+                Refresh
+              </button>
+              <button class="btn-primary btn-sm" id="btnCompare" onclick="compareVersions()" disabled>
+                Compare Selected
+              </button>
+            </div>
+            <p id="compareHint" style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 8px;">
+              Select 2 versions to compare
+            </p>
             <ul class="version-list" id="versionList">
               <li style="color: var(--text-muted); font-size: 0.8rem; padding: 8px;">
                 Load a secret to see versions
@@ -499,6 +529,23 @@
         <button class="btn-primary" onclick="restoreVersion()">
           Restore This Version
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Version Comparison Modal -->
+  <div class="modal-overlay" id="compareModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Version Comparison</h2>
+        <button class="btn-secondary btn-sm" onclick="closeCompareModal()">&times; Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="compareLabels" style="margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted);"></div>
+        <div class="diff-container" id="compareContent"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeCompareModal()">Close</button>
       </div>
     </div>
   </div>

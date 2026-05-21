@@ -12,6 +12,9 @@ let editor = null;
 let versionViewerEditor = null;
 let versionToRestore = null;
 let pollTimer = null;
+let saveSessionTimer = null;
+let selectedVersions = []; // {versionId, createdDate} — max 2 for comparison
+let versionsData = []; // cached version list from last loadVersionHistory
 
 // ── Helpers ────────────────────────────────────────────────────────────
 function setStatus(elId, message, type = "info") {
@@ -30,6 +33,123 @@ function clearStatus(elId) {
 
 function generateSessionId() {
   return "sess-" + crypto.randomUUID();
+}
+
+// ── Session Persistence ───────────────────────────────────────────────
+const SESSION_KEY = "aws-secrets-editor-session";
+
+function saveSession() {
+  try {
+    let editorContent = null;
+    if (editor) {
+      const content = editor.get();
+      if (content.json !== undefined) editorContent = content.json;
+      else if (content.text !== undefined) editorContent = JSON.parse(content.text);
+    }
+
+    const state = {
+      sessionId,
+      currentProfileName,
+      currentEnvId,
+      currentEnvName,
+      originalValue,
+      editorContent,
+      timestamp: Date.now(),
+    };
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore serialization errors
+  }
+}
+
+function debouncedSaveSession() {
+  if (saveSessionTimer) clearTimeout(saveSessionTimer);
+  saveSessionTimer = setTimeout(saveSession, 2000);
+}
+
+function clearSession() {
+  sessionStorage.removeItem(SESSION_KEY);
+}
+
+function getSavedSession() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function restoreSession() {
+  const saved = getSavedSession();
+  if (!saved || !saved.sessionId || !saved.currentEnvId) return false;
+
+  // Validate the backend session is still alive
+  try {
+    await api("GET", `/api/sso/environments?sessionId=${saved.sessionId}`);
+  } catch {
+    clearSession();
+    return false;
+  }
+
+  // Restore state
+  sessionId = saved.sessionId;
+  currentProfileName = saved.currentProfileName;
+  currentEnvId = saved.currentEnvId;
+  currentEnvName = saved.currentEnvName;
+  originalValue = saved.originalValue;
+
+  // Mark step 1 done and set status
+  markStepDone(1);
+  setStatus("ssoStatus", "Session restored from previous connection.", "success");
+
+  // Select the right profile in dropdown
+  const profileSel = document.getElementById("ssoProfile");
+  if (currentProfileName) {
+    for (const opt of profileSel.options) {
+      if (opt.value === currentProfileName) {
+        opt.selected = true;
+        break;
+      }
+    }
+  }
+
+  // Load environments and select the right one
+  await loadEnvironments();
+  const envSel = document.getElementById("envSelect");
+  for (const opt of envSel.options) {
+    if (opt.value === currentEnvId) {
+      opt.selected = true;
+      break;
+    }
+  }
+
+  // Update badges
+  const badge = document.getElementById("envBadge");
+  badge.textContent = currentEnvName;
+  badge.className = `env-badge ${currentEnvName}`;
+  document.getElementById("sessionBadge").classList.remove("hidden");
+  markStepDone(2);
+
+  // Initialize editor with saved content or originalValue
+  const valueToLoad = saved.editorContent || originalValue;
+  if (valueToLoad) {
+    initEditor(valueToLoad);
+    openStep("step3");
+
+    // If editorContent differs from originalValue, mark as changed
+    if (saved.editorContent && JSON.stringify(saved.editorContent) !== JSON.stringify(originalValue)) {
+      document.getElementById("btnReview").disabled = false;
+      document.getElementById("editorStatus").textContent = "Unsaved changes (restored from session)";
+      setStatus("editorMainStatus", "Your unsaved changes have been restored.", "warning");
+    }
+
+    loadVersionHistory();
+  }
+
+  setStatus("envStatus", "Session restored. Environment re-selected.", "success");
+  return true;
 }
 
 async function api(method, path, body) {
@@ -134,6 +254,7 @@ function startPolling(profileName, deviceCode, interval) {
         setStatus("ssoStatus", "Connected successfully!", "success");
         markStepDone(1);
         document.getElementById("btnConnect").disabled = false;
+        saveSession();
         await loadEnvironments();
       }
     } catch (err) {
@@ -213,6 +334,7 @@ window.loadSecretValue = async function () {
 
     // Load version history
     loadVersionHistory();
+    saveSession();
   } catch (err) {
     setStatus("envStatus", `Failed to load secret: ${err.message}`, "error");
   }
@@ -242,6 +364,7 @@ function initEditor(value) {
         document.getElementById("editorStatus").textContent = hasChanges
           ? "Unsaved changes"
           : "No changes";
+        debouncedSaveSession();
       },
     },
   });
@@ -361,6 +484,7 @@ window.finalSave = async function () {
 
     // Refresh version history
     loadVersionHistory();
+    saveSession();
   } catch (err) {
     closeConfirmModal();
     setStatus("editorMainStatus", `Failed to save: ${err.message}`, "error");
@@ -376,9 +500,12 @@ window.loadVersionHistory = async function () {
 
   const list = document.getElementById("versionList");
   list.innerHTML = '<li style="color: var(--text-muted); font-size: 0.8rem; padding: 8px;"><span class="loading-spinner"></span>Loading...</li>';
+  selectedVersions = [];
+  updateCompareButton();
 
   try {
     const data = await api("GET", `/api/secret/versions?envId=${currentEnvId}&sessionId=${sessionId}`);
+    versionsData = data.versions;
     list.innerHTML = "";
 
     if (data.versions.length === 0) {
@@ -389,7 +516,7 @@ window.loadVersionHistory = async function () {
     for (const v of data.versions) {
       const li = document.createElement("li");
       li.className = "version-item";
-      li.onclick = () => viewVersion(v.versionId);
+      li.dataset.versionId = v.versionId;
 
       const date = v.createdDate ? new Date(v.createdDate).toLocaleString() : "Unknown date";
       const stages = (v.versionStages || [])
@@ -400,15 +527,113 @@ window.loadVersionHistory = async function () {
         .join(" ");
 
       li.innerHTML =
-        `<div class="version-date">${date}</div>` +
-        `<div>${stages}</div>` +
-        `<div class="version-id">${v.versionId}</div>`;
+        `<div class="version-item-row">` +
+          `<input type="checkbox" class="version-checkbox" data-version-id="${v.versionId}" data-created-date="${v.createdDate || ""}" title="Select for comparison" />` +
+          `<div class="version-item-content">` +
+            `<div class="version-date">${date}</div>` +
+            `<div>${stages}</div>` +
+            `<div class="version-id">${v.versionId}</div>` +
+          `</div>` +
+        `</div>`;
+
+      // Click on content area to view, checkbox for compare selection
+      li.querySelector(".version-item-content").onclick = () => viewVersion(v.versionId);
+      li.querySelector(".version-checkbox").onclick = (e) => {
+        e.stopPropagation();
+        toggleVersionSelection(v.versionId, v.createdDate, e.target);
+      };
 
       list.appendChild(li);
     }
   } catch (err) {
     list.innerHTML = `<li style="color: var(--danger); font-size: 0.8rem; padding: 8px;">Error: ${err.message}</li>`;
   }
+};
+
+function toggleVersionSelection(versionId, createdDate, checkbox) {
+  const idx = selectedVersions.findIndex((v) => v.versionId === versionId);
+  if (idx >= 0) {
+    // Deselect
+    selectedVersions.splice(idx, 1);
+    checkbox.checked = false;
+  } else {
+    if (selectedVersions.length >= 2) {
+      // Uncheck the oldest selection
+      const removed = selectedVersions.shift();
+      const oldCheckbox = document.querySelector(`.version-checkbox[data-version-id="${removed.versionId}"]`);
+      if (oldCheckbox) oldCheckbox.checked = false;
+      const oldLi = oldCheckbox?.closest(".version-item");
+      if (oldLi) oldLi.classList.remove("selected");
+    }
+    selectedVersions.push({ versionId, createdDate });
+    checkbox.checked = true;
+  }
+
+  // Update selected styling
+  document.querySelectorAll(".version-item").forEach((li) => {
+    const isSelected = selectedVersions.some((v) => v.versionId === li.dataset.versionId);
+    li.classList.toggle("selected", isSelected);
+  });
+
+  updateCompareButton();
+}
+
+function updateCompareButton() {
+  const btn = document.getElementById("btnCompare");
+  const hint = document.getElementById("compareHint");
+  if (selectedVersions.length === 2) {
+    btn.disabled = false;
+    hint.textContent = "2 versions selected";
+  } else if (selectedVersions.length === 1) {
+    btn.disabled = true;
+    hint.textContent = "Select 1 more version to compare";
+  } else {
+    btn.disabled = true;
+    hint.textContent = "Select 2 versions to compare";
+  }
+}
+
+window.compareVersions = async function () {
+  if (selectedVersions.length !== 2) return;
+
+  const btn = document.getElementById("btnCompare");
+  btn.disabled = true;
+  btn.textContent = "Loading...";
+
+  try {
+    // Sort by date — older first (left side of diff), newer second (right side)
+    const sorted = [...selectedVersions].sort(
+      (a, b) => new Date(a.createdDate) - new Date(b.createdDate)
+    );
+
+    const [older, newer] = await Promise.all(
+      sorted.map((v) =>
+        api("GET", `/api/secret/version/${encodeURIComponent(v.versionId)}?envId=${currentEnvId}&sessionId=${sessionId}`)
+      )
+    );
+
+    const olderDate = sorted[0].createdDate ? new Date(sorted[0].createdDate).toLocaleString() : "Unknown";
+    const newerDate = sorted[1].createdDate ? new Date(sorted[1].createdDate).toLocaleString() : "Unknown";
+
+    document.getElementById("compareLabels").innerHTML =
+      `<span style="color: var(--diff-remove-text);">&#x25CF; Older: ${olderDate}</span>` +
+      `<span style="margin: 0 8px;">vs</span>` +
+      `<span style="color: var(--diff-add-text);">&#x25CF; Newer: ${newerDate}</span>` +
+      `<br><span style="font-family: monospace; font-size: 0.7rem;">${sorted[0].versionId} &rarr; ${sorted[1].versionId}</span>`;
+
+    const diff = generateDiff(older.value, newer.value);
+    document.getElementById("compareContent").innerHTML = diff;
+    document.getElementById("compareModal").classList.add("active");
+  } catch (err) {
+    alert(`Failed to compare versions: ${err.message}`);
+  } finally {
+    btn.textContent = "Compare Selected";
+    updateCompareButton();
+  }
+};
+
+window.closeCompareModal = function () {
+  document.getElementById("compareModal").classList.remove("active");
 };
 
 async function viewVersion(versionId) {
@@ -531,4 +756,12 @@ function escapeHtml(str) {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
-loadProfiles();
+async function init() {
+  await loadProfiles();
+  const restored = await restoreSession();
+  if (!restored) {
+    // Fresh start — step 1 is already open by default
+  }
+}
+
+init();
