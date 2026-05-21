@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AWS Secrets Editor</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --danger-hover: #b91c1c;
+      --success: #16a34a;
+      --warning: #d97706;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --diff-add-bg: #dcfce7;
+      --diff-add-text: #166534;
+      --diff-remove-bg: #fee2e2;
+      --diff-remove-text: #991b1b;
+      --diff-change-bg: #fef3c7;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid var(--border);
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    header .subtitle {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .step {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      cursor: pointer;
+      user-select: none;
+      background: #f1f5f9;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .step-header:hover { background: #e2e8f0; }
+
+    .step-number {
+      background: var(--primary);
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-right: 12px;
+      flex-shrink: 0;
+    }
+
+    .step-number.done { background: var(--success); }
+    .step-title { font-weight: 600; }
+
+    .step-body {
+      padding: 16px;
+      display: none;
+    }
+
+    .step.open .step-body { display: block; }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .form-group label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    select, input {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.9rem;
+      min-width: 200px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover { background: var(--danger-hover); }
+
+    .btn-success { background: var(--success); color: white; }
+    .btn-success:hover { background: #15803d; }
+
+    .btn-secondary {
+      background: #e2e8f0;
+      color: var(--text);
+    }
+    .btn-secondary:hover { background: #cbd5e1; }
+
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+
+    .status {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      margin-top: 8px;
+    }
+
+    .status.info { background: #dbeafe; color: #1e40af; }
+    .status.success { background: #dcfce7; color: #166534; }
+    .status.error { background: #fee2e2; color: #991b1b; }
+    .status.warning { background: #fef3c7; color: #92400e; }
+
+    .sso-link {
+      display: inline-block;
+      margin-top: 8px;
+      color: var(--primary);
+      text-decoration: underline;
+      word-break: break-all;
+    }
+
+    /* Editor layout */
+    .editor-container {
+      display: flex;
+      gap: 16px;
+      min-height: 500px;
+    }
+
+    .editor-main {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .editor-sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      border-left: 1px solid var(--border);
+      padding-left: 16px;
+    }
+
+    .editor-toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    #jsoneditor {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      height: 600px;
+    }
+
+    /* vanilla-jsoneditor uses shadow DOM, so we set height on the container */
+    #jsoneditor .jse-main { height: 100%; }
+
+    /* Version history */
+    .version-list {
+      list-style: none;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .version-item {
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+
+    .version-item:hover { background: #f1f5f9; }
+    .version-item .version-id { font-family: monospace; font-size: 0.75rem; color: var(--text-muted); }
+    .version-item .version-date { font-weight: 600; }
+    .version-item .version-stage {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+    .version-stage.current { background: #dcfce7; color: #166534; }
+    .version-stage.previous { background: #fef3c7; color: #92400e; }
+
+    /* Diff modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 12px;
+      max-width: 95vw;
+      max-height: 90vh;
+      width: 1200px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h2 { font-size: 1.1rem; }
+
+    .modal-body {
+      flex: 1;
+      overflow: auto;
+      padding: 20px;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Diff rendering */
+    .diff-container {
+      font-family: "SF Mono", Monaco, "Cascadia Code", monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .diff-line { padding: 1px 8px; }
+    .diff-add { background: var(--diff-add-bg); color: var(--diff-add-text); }
+    .diff-remove { background: var(--diff-remove-bg); color: var(--diff-remove-text); }
+    .diff-context { color: var(--text-muted); }
+
+    .env-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .env-badge.sandbox { background: #dbeafe; color: #1e40af; }
+    .env-badge.staging { background: #fef3c7; color: #92400e; }
+    .env-badge.production { background: #fee2e2; color: #991b1b; }
+
+    .loading-spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #e2e8f0;
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>AWS Secrets Editor</h1>
+        <div class="subtitle">Edit ALL_ORGANIZATIONS_SETTINGS safely</div>
+      </div>
+      <div id="sessionBadge" class="hidden">
+        <span class="env-badge" id="envBadge"></span>
+      </div>
+    </header>
+
+    <!-- Step 1: SSO Connection -->
+    <div class="step open" id="step1">
+      <div class="step-header" onclick="toggleStep('step1')">
+        <div class="step-number" id="step1-num">1</div>
+        <div class="step-title">SSO Connection</div>
+      </div>
+      <div class="step-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>SSO Profile</label>
+            <select id="ssoProfile">
+              <option value="">Loading profiles...</option>
+            </select>
+          </div>
+          <button class="btn-primary" id="btnConnect" onclick="startSsoLogin()">
+            Connect with SSO
+          </button>
+        </div>
+        <div id="ssoStatus"></div>
+      </div>
+    </div>
+
+    <!-- Step 2: Environment Selection -->
+    <div class="step" id="step2">
+      <div class="step-header" onclick="toggleStep('step2')">
+        <div class="step-number" id="step2-num">2</div>
+        <div class="step-title">Environment</div>
+      </div>
+      <div class="step-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Environment</label>
+            <select id="envSelect">
+              <option value="">Select environment...</option>
+            </select>
+          </div>
+          <button class="btn-primary" id="btnLoadSecret" onclick="loadSecretValue()">
+            Load Secret
+          </button>
+        </div>
+        <div id="envStatus"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: JSON Editor -->
+    <div class="step" id="step3">
+      <div class="step-header" onclick="toggleStep('step3')">
+        <div class="step-number" id="step3-num">3</div>
+        <div class="step-title">Edit ALL_ORGANIZATIONS_SETTINGS</div>
+      </div>
+      <div class="step-body">
+        <div class="editor-container">
+          <div class="editor-main">
+            <div class="editor-toolbar">
+              <button class="btn-primary" id="btnReview" onclick="reviewChanges()" disabled>
+                Review Changes
+              </button>
+              <button class="btn-secondary btn-sm" onclick="expandAll()">Expand All</button>
+              <button class="btn-secondary btn-sm" onclick="collapseAll()">Collapse All</button>
+              <span id="editorStatus" style="margin-left: auto; font-size: 0.8rem; color: var(--text-muted);"></span>
+            </div>
+            <div id="jsoneditor"></div>
+          </div>
+          <div class="editor-sidebar">
+            <h3 style="font-size: 0.9rem; margin-bottom: 12px;">Version History</h3>
+            <button class="btn-secondary btn-sm" onclick="loadVersionHistory()" style="margin-bottom: 12px;">
+              Refresh History
+            </button>
+            <ul class="version-list" id="versionList">
+              <li style="color: var(--text-muted); font-size: 0.8rem; padding: 8px;">
+                Load a secret to see versions
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div id="editorMainStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Diff Review Modal -->
+  <div class="modal-overlay" id="diffModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Review Changes</h2>
+        <button class="btn-secondary btn-sm" onclick="closeDiffModal()">&times; Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="diffWarning" class="status warning" style="margin-bottom: 16px;">
+          You are about to update <strong>ALL_ORGANIZATIONS_SETTINGS</strong> on
+          <span class="env-badge" id="diffEnvBadge"></span>
+        </div>
+        <div class="diff-container" id="diffContent"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeDiffModal()">Cancel</button>
+        <button class="btn-danger" id="btnConfirmSave" onclick="confirmSave()">
+          Confirm & Save
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Modal -->
+  <div class="modal-overlay" id="confirmModal">
+    <div class="modal" style="width: 500px;">
+      <div class="modal-header">
+        <h2>Final Confirmation</h2>
+        <button class="btn-secondary btn-sm" onclick="closeConfirmModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom: 12px;">
+          You are about to <strong>permanently update</strong> the secret on
+          <span class="env-badge" id="confirmEnvBadge"></span>.
+        </p>
+        <p style="margin-bottom: 16px; color: var(--text-muted); font-size: 0.85rem;">
+          The previous version will be kept in AWS Secrets Manager version history.
+          Type the environment name below to confirm.
+        </p>
+        <input
+          type="text"
+          id="confirmInput"
+          placeholder="Type environment name..."
+          style="width: 100%;"
+          oninput="checkConfirmInput()"
+        />
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeConfirmModal()">Cancel</button>
+        <button class="btn-danger" id="btnFinalSave" onclick="finalSave()" disabled>
+          Save to AWS
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Version View Modal -->
+  <div class="modal-overlay" id="versionModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Version: <span id="versionModalId" style="font-family: monospace; font-size: 0.9rem;"></span></h2>
+        <button class="btn-secondary btn-sm" onclick="closeVersionModal()">&times; Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="versionJsonViewer" style="height: 500px; border: 1px solid var(--border); border-radius: 6px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeVersionModal()">Close</button>
+        <button class="btn-primary" onclick="restoreVersion()">
+          Restore This Version
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
