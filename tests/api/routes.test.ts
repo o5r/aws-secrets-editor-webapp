@@ -178,6 +178,13 @@ describe("API Routes", () => {
       expect(res.body.value).toEqual({ org1: { setting: "value" } });
       expect(res.body.environment).toBe("sandbox");
     });
+
+    it("returns 500 on service error", async () => {
+      vi.mocked(loadSecret).mockRejectedValue(new Error("secret not found"));
+      const res = await request(app).get("/api/secret?envId=123-Admin&sessionId=sess-1");
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("secret not found");
+    });
   });
 
   describe("PUT /api/secret", () => {
@@ -199,9 +206,25 @@ describe("API Routes", () => {
       expect(res.body.versionId).toBe("v2");
       expect(res.body.message).toBe("Secret updated successfully");
     });
+
+    it("returns 500 on save error", async () => {
+      vi.mocked(saveSecret).mockRejectedValue(new Error("access denied"));
+      const res = await request(app).put("/api/secret").send({
+        envId: "123-Admin",
+        sessionId: "sess-1",
+        value: {},
+      });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("access denied");
+    });
   });
 
   describe("GET /api/secret/versions", () => {
+    it("returns 400 without params", async () => {
+      const res = await request(app).get("/api/secret/versions");
+      expect(res.status).toBe(400);
+    });
+
     it("returns versions", async () => {
       vi.mocked(listVersions).mockResolvedValue([
         { versionId: "v1", versionStages: ["AWSCURRENT"] },
@@ -211,9 +234,20 @@ describe("API Routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.versions).toHaveLength(1);
     });
+
+    it("returns 500 on error", async () => {
+      vi.mocked(listVersions).mockRejectedValue(new Error("fail"));
+      const res = await request(app).get("/api/secret/versions?envId=123-Admin&sessionId=sess-1");
+      expect(res.status).toBe(500);
+    });
   });
 
   describe("GET /api/secret/version/:versionId", () => {
+    it("returns 400 without params", async () => {
+      const res = await request(app).get("/api/secret/version/v1");
+      expect(res.status).toBe(400);
+    });
+
     it("loads specific version", async () => {
       vi.mocked(loadVersion).mockResolvedValue({
         value: { org1: {} },
@@ -224,6 +258,49 @@ describe("API Routes", () => {
       const res = await request(app).get("/api/secret/version/v1?envId=123-Admin&sessionId=sess-1");
       expect(res.status).toBe(200);
       expect(res.body.versionId).toBe("v1");
+    });
+
+    it("returns 500 on error", async () => {
+      vi.mocked(loadVersion).mockRejectedValue(new Error("version not found"));
+      const res = await request(app).get("/api/secret/version/v1?envId=123-Admin&sessionId=sess-1");
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("version not found");
+    });
+  });
+
+  describe("error handling", () => {
+    it("GET /api/sso-profiles returns 500 on error", async () => {
+      const { loadSsoProfiles } = await import("../../src/aws/ssoProfiles");
+      vi.mocked(loadSsoProfiles).mockImplementationOnce(() => { throw new Error("fs error"); });
+      const res = await request(app).get("/api/sso-profiles");
+      expect(res.status).toBe(500);
+    });
+
+    it("POST /api/sso/login/start returns 500 on error", async () => {
+      vi.mocked(startLogin).mockRejectedValueOnce(new Error("oidc error"));
+      const res = await request(app)
+        .post("/api/sso/login/start")
+        .send({ profileName: "test" });
+      expect(res.status).toBe(500);
+    });
+
+    it("POST /api/sso/login/poll returns 500 on error", async () => {
+      vi.mocked(pollForLogin).mockRejectedValueOnce(new Error("poll error"));
+      const res = await request(app)
+        .post("/api/sso/login/poll")
+        .send({ profileName: "test", deviceCode: "code", sessionId: "sess" });
+      expect(res.status).toBe(500);
+    });
+
+    it("GET /api/sso/environments returns 500 on error", async () => {
+      vi.mocked(getSsoSession).mockReturnValueOnce({
+        ssoSession: "test",
+        ssoRegion: "eu-west-1",
+        accessToken: "token",
+      });
+      vi.mocked(discoverSsoEnvironments).mockRejectedValueOnce(new Error("discovery error"));
+      const res = await request(app).get("/api/sso/environments?sessionId=sess-1");
+      expect(res.status).toBe(500);
     });
   });
 });

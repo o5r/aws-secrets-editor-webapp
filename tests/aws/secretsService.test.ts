@@ -47,7 +47,8 @@ vi.mock("../../src/aws/envConfig", () => ({
   })),
 }));
 
-import { loadSecret, saveSecret, listVersions } from "../../src/aws/secretsService";
+import { loadSecret, saveSecret, listVersions, loadVersion } from "../../src/aws/secretsService";
+import { getSsoSession } from "../../src/aws/sessionStore";
 
 describe("secretsService", () => {
   beforeEach(() => {
@@ -158,6 +159,100 @@ describe("secretsService", () => {
       expect(versions).toHaveLength(2);
       expect(versions[0].versionId).toBe("v2"); // Most recent first
       expect(versions[1].versionId).toBe("v1");
+    });
+
+    it("filters out versions without VersionId", async () => {
+      mockSmSend.mockResolvedValue({
+        Versions: [
+          { VersionId: "v1", VersionStages: ["AWSCURRENT"] },
+          { VersionStages: ["AWSPREVIOUS"] }, // no VersionId
+        ],
+      });
+
+      const versions = await listVersions("123-Admin", "sess-1");
+      expect(versions).toHaveLength(1);
+    });
+
+    it("handles empty versions list", async () => {
+      mockSmSend.mockResolvedValue({ Versions: [] });
+      const versions = await listVersions("123-Admin", "sess-1");
+      expect(versions).toEqual([]);
+    });
+  });
+
+  describe("loadVersion", () => {
+    it("loads a specific version", async () => {
+      const fullSecret = {
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { versioned: true } }),
+      };
+
+      mockSmSend.mockResolvedValue({
+        SecretString: JSON.stringify(fullSecret),
+        VersionId: "v-specific",
+        VersionStages: ["AWSPREVIOUS"],
+      });
+
+      const result = await loadVersion("123-Admin", "sess-1", "v-specific");
+      expect(result.value).toEqual({ org1: { versioned: true } });
+      expect(result.versionId).toBe("v-specific");
+      expect(result.versionStages).toEqual(["AWSPREVIOUS"]);
+    });
+
+    it("throws when version has no SecretString", async () => {
+      mockSmSend.mockResolvedValue({
+        SecretString: undefined,
+        VersionId: "v1",
+      });
+
+      await expect(loadVersion("123-Admin", "sess-1", "v1")).rejects.toThrow(
+        "Secret version has no string value"
+      );
+    });
+
+    it("throws when key is missing in version", async () => {
+      mockSmSend.mockResolvedValue({
+        SecretString: JSON.stringify({ OTHER: "val" }),
+        VersionId: "v1",
+      });
+
+      await expect(loadVersion("123-Admin", "sess-1", "v1")).rejects.toThrow(
+        'Key "ALL_ORGANIZATIONS_SETTINGS" not found in version "v1"'
+      );
+    });
+  });
+
+  describe("createSecretsManagerClient errors", () => {
+    it("throws when no active SSO session", async () => {
+      vi.mocked(getSsoSession).mockReturnValueOnce(undefined);
+
+      await expect(loadSecret("123-Admin", "sess-1")).rejects.toThrow(
+        "No active SSO session"
+      );
+    });
+
+    it("throws when role credentials are missing", async () => {
+      mockSsoSend.mockResolvedValueOnce({
+        roleCredentials: {
+          accessKeyId: undefined,
+          secretAccessKey: undefined,
+        },
+      });
+
+      await expect(loadSecret("123-Admin", "sess-1")).rejects.toThrow(
+        "Failed to obtain role credentials via SSO"
+      );
+    });
+  });
+
+  describe("saveSecret errors", () => {
+    it("throws when current secret has no string value", async () => {
+      mockSmSend.mockResolvedValueOnce({
+        SecretString: undefined,
+      });
+
+      await expect(saveSecret("123-Admin", "sess-1", {})).rejects.toThrow(
+        "Secret has no string value"
+      );
     });
   });
 });
