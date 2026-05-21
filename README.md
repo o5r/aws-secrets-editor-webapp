@@ -1,11 +1,11 @@
 ## AWS Secrets Editor Web App
 
-[![CI](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/ci.yml/badge.svg)](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/ci.yml)
-[![Trivy](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/trivy.yml/badge.svg)](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/trivy.yml)
-[![CodeQL](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/codeql.yml/badge.svg)](https://github.com/eliauren/aws-secrets-editor-webapp/actions/workflows/codeql.yml)
-[![codecov](https://codecov.io/gh/eliauren/aws-secrets-editor-webapp/branch/main/graph/badge.svg)](https://codecov.io/gh/eliauren/aws-secrets-editor-webapp)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/eliauren/aws-secrets-editor-webapp/pkgs/container/aws-secrets-editor-webapp)
-[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/eliauren/aws-secrets-editor-webapp/security/dependabot)
+[![CI](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/ci.yml/badge.svg)](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/ci.yml)
+[![Trivy](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/trivy.yml/badge.svg)](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/trivy.yml)
+[![CodeQL](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/codeql.yml/badge.svg)](https://github.com/o5r/aws-secrets-editor-webapp/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/o5r/aws-secrets-editor-webapp/branch/main/graph/badge.svg)](https://codecov.io/gh/o5r/aws-secrets-editor-webapp)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/o5r/aws-secrets-editor-webapp/pkgs/container/aws-secrets-editor-webapp)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025e8c?logo=dependabot)](https://github.com/o5r/aws-secrets-editor-webapp/security/dependabot)
 
 Web application to safely edit the `ALL_ORGANIZATIONS_SETTINGS` JSON value in AWS Secrets Manager, using AWS SSO for authentication.
 
@@ -37,11 +37,11 @@ Open `http://localhost:3000` in your browser, select your SSO profile, and click
 ### Run from GitHub Container Registry
 
 ```bash
-docker pull ghcr.io/eliauren/aws-secrets-editor-webapp:latest
+docker pull ghcr.io/o5r/aws-secrets-editor-webapp:latest
 
 docker run --rm -p 3000:3000 \
   -v ~/.aws:/root/.aws:ro \
-  ghcr.io/eliauren/aws-secrets-editor-webapp:latest
+  ghcr.io/o5r/aws-secrets-editor-webapp:latest
 ```
 
 ### Build and run locally with Docker
