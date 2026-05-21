@@ -63,9 +63,9 @@ describe("secretsService", () => {
   });
 
   describe("loadSecret", () => {
-    it("extracts ALL_ORGANIZATION_SETTINGS from the full secret", async () => {
+    it("extracts ALL_ORGANIZATIONS_SETTINGS from the full secret", async () => {
       const fullSecret = {
-        ALL_ORGANIZATION_SETTINGS: JSON.stringify({ org1: { key: "val" } }),
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { key: "val" } }),
         OTHER_KEY: "other_value",
       };
 
@@ -81,14 +81,14 @@ describe("secretsService", () => {
       expect(result.versionId).toBe("v1");
     });
 
-    it("throws when ALL_ORGANIZATION_SETTINGS key is missing", async () => {
+    it("throws when ALL_ORGANIZATIONS_SETTINGS key is missing", async () => {
       mockSmSend.mockResolvedValue({
         SecretString: JSON.stringify({ SOME_OTHER_KEY: "value" }),
         VersionId: "v1",
       });
 
       await expect(loadSecret("123-Admin", "sess-1")).rejects.toThrow(
-        'Key "ALL_ORGANIZATION_SETTINGS" not found'
+        'Key "ALL_ORGANIZATIONS_SETTINGS" not found'
       );
     });
 
@@ -105,9 +105,9 @@ describe("secretsService", () => {
   });
 
   describe("saveSecret", () => {
-    it("preserves other keys when updating ALL_ORGANIZATION_SETTINGS", async () => {
+    it("preserves other keys when updating ALL_ORGANIZATIONS_SETTINGS", async () => {
       const originalSecret = {
-        ALL_ORGANIZATION_SETTINGS: JSON.stringify({ org1: { old: true } }),
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { old: true } }),
         OTHER_KEY: "must_be_preserved",
         ANOTHER_KEY: "also_preserved",
       };
@@ -132,7 +132,7 @@ describe("secretsService", () => {
       const savedFull = JSON.parse(putCall.input.SecretString);
       expect(savedFull.OTHER_KEY).toBe("must_be_preserved");
       expect(savedFull.ANOTHER_KEY).toBe("also_preserved");
-      expect(JSON.parse(savedFull.ALL_ORGANIZATION_SETTINGS)).toEqual(newValue);
+      expect(JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS)).toEqual(newValue);
     });
   });
 

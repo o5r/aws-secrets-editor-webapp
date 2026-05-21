@@ -132,7 +132,7 @@ app.get("/api/sso/environments", async (req, res) => {
   }
 });
 
-// Load the ALL_ORGANIZATION_SETTINGS value from the secret
+// Load the ALL_ORGANIZATIONS_SETTINGS value from the secret
 app.get("/api/secret", async (req, res) => {
   const envId = req.query.envId as string;
   const sessionId = req.query.sessionId as string;
@@ -152,7 +152,7 @@ app.get("/api/secret", async (req, res) => {
   }
 });
 
-// Save updated ALL_ORGANIZATION_SETTINGS value
+// Save updated ALL_ORGANIZATIONS_SETTINGS value
 app.put("/api/secret", writeRateLimiter, async (req, res) => {
   const { envId, sessionId, value } = req.body ?? {};
 

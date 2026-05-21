@@ -8,7 +8,7 @@ import {
 import type { ConnectedSsoSession } from "./sessionStore";
 import type { EnvironmentConfig } from "./credentials";
 
-/** Environments that have the ALL_ORGANIZATION_SETTINGS secret */
+/** Environments that have the ALL_ORGANIZATIONS_SETTINGS secret */
 const ALLOWED_ENVIRONMENTS = ["sandbox", "staging", "production"];
 
 /**

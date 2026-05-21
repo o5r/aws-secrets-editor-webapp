@@ -55,7 +55,7 @@ async function createSecretsManagerClient(
 
 /**
  * Parse the full secret string. The secret is a JSON object where each key
- * maps to a string value. ALL_ORGANIZATION_SETTINGS specifically contains
+ * maps to a string value. ALL_ORGANIZATIONS_SETTINGS specifically contains
  * a JSON-encoded string.
  */
 function parseFullSecret(secretString: string): Record<string, string> {
@@ -85,11 +85,6 @@ export async function loadSecret(
   }
 
   const fullSecret = parseFullSecret(res.SecretString);
-
-  // Log available keys for debugging
-  // eslint-disable-next-line no-console
-  console.log(`Secret "${secretName}" keys:`, Object.keys(fullSecret));
-
   const rawValue = fullSecret[SECRET_KEY];
 
   if (rawValue === undefined) {
@@ -132,7 +127,7 @@ export async function saveSecret(
 
   const fullSecret = parseFullSecret(currentRes.SecretString);
 
-  // Replace only ALL_ORGANIZATION_SETTINGS, keep everything else
+  // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else
   fullSecret[SECRET_KEY] = JSON.stringify(newValue);
 
   const res = await client.send(
