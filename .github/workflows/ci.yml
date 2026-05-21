@@ -13,17 +13,13 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [20, 22]
-
     steps:
       - uses: actions/checkout@v6
 
-      - name: Use Node.js ${{ matrix.node-version }}
+      - name: Use Node.js 25
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 25
           cache: npm
 
       - name: Install dependencies
@@ -39,7 +35,6 @@ jobs:
         run: npm run test:coverage
 
       - name: Upload coverage to Codecov
-        if: matrix.node-version == 22
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage/lcov.info
