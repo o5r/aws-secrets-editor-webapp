@@ -18,10 +18,11 @@ Web application to safely edit the `ALL_ORGANIZATIONS_SETTINGS` JSON value in AW
 - **Double confirmation** — type the environment name to confirm writes, preventing accidental updates.
 - **Version history** — browse previous secret versions, view them read-only, and restore any past version.
 - **Safe updates** — only the `ALL_ORGANIZATIONS_SETTINGS` key is modified; all other keys in the secret are preserved untouched.
+- **Rate limiting** — SSO and write endpoints are rate-limited to prevent abuse.
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 25+
 - AWS CLI configured on the host with at least one SSO profile (`aws configure sso`).
 
 ### Install and run locally
