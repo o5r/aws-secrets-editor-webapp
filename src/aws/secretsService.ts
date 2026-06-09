@@ -159,7 +159,8 @@ export async function listVersions(
   const res = await client.send(
     new ListSecretVersionIdsCommand({
       SecretId: secretName,
-      IncludeDeprecated: false,
+      IncludeDeprecated: true,
+      MaxResults: 10,
     })
   );
 
@@ -174,7 +175,8 @@ export async function listVersions(
       const da = a.createdDate?.getTime() ?? 0;
       const db = b.createdDate?.getTime() ?? 0;
       return db - da;
-    });
+    })
+    .slice(0, 10);
 }
 
 export async function loadVersion(
