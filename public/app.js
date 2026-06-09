@@ -722,7 +722,10 @@ window.compareVersions = async function () {
       `<span style="color: var(--diff-add-text);">&#x25CF; Newer: ${newerDate}</span>` +
       `<br><span style="font-family: monospace; font-size: 0.7rem;">${sorted[0].versionId} &rarr; ${sorted[1].versionId}</span>`;
 
-    const diff = generateDiff(older.value, newer.value);
+    const olderValue = older.value ?? {};
+    const newerValue = newer.value ?? {};
+
+    const diff = generateDiff(olderValue, newerValue);
     document.getElementById("compareContent").innerHTML = diff;
     document.getElementById("compareModal").classList.add("active");
   } catch (err) {
@@ -744,10 +747,6 @@ async function viewVersion(versionId) {
       `/api/secret/version/${encodeURIComponent(versionId)}?envId=${currentEnvId}&sessionId=${sessionId}`
     );
 
-    versionToRestore = data.value;
-
-    document.getElementById("versionModalId").textContent = versionId;
-
     const container = document.getElementById("versionJsonViewer");
     container.innerHTML = "";
 
@@ -756,16 +755,29 @@ async function viewVersion(versionId) {
       versionViewerEditor = null;
     }
 
-    versionViewerEditor = new JSONEditor({
-      target: container,
-      props: {
-        content: { json: data.value },
-        mode: "tree",
-        mainMenuBar: false,
-        readOnly: true,
-      },
-    });
+    if (data.value === null) {
+      versionToRestore = null;
+      container.innerHTML =
+        '<div class="status warning" style="margin: 16px;">' +
+        'This version does not contain the <strong>ALL_ORGANIZATIONS_SETTINGS</strong> key.' +
+        '</div>';
+      document.getElementById("btnRestoreVersion").disabled = true;
+    } else {
+      versionToRestore = data.value;
 
+      versionViewerEditor = new JSONEditor({
+        target: container,
+        props: {
+          content: { json: data.value },
+          mode: "tree",
+          mainMenuBar: false,
+          readOnly: true,
+        },
+      });
+      document.getElementById("btnRestoreVersion").disabled = false;
+    }
+
+    document.getElementById("versionModalId").textContent = versionId;
     document.getElementById("versionModal").classList.add("active");
   } catch (err) {
     alert(`Failed to load version: ${err.message}`);

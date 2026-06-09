@@ -209,15 +209,15 @@ describe("secretsService", () => {
       );
     });
 
-    it("throws when key is missing in version", async () => {
+    it("returns null value when key is missing in version", async () => {
       mockSmSend.mockResolvedValue({
         SecretString: JSON.stringify({ OTHER: "val" }),
         VersionId: "v1",
       });
 
-      await expect(loadVersion("123-Admin", "sess-1", "v1")).rejects.toThrow(
-        'Key "ALL_ORGANIZATIONS_SETTINGS" not found in version "v1"'
-      );
+      const result = await loadVersion("123-Admin", "sess-1", "v1");
+      expect(result.value).toBeNull();
+      expect(result.versionId).toBe("v1");
     });
   });
 

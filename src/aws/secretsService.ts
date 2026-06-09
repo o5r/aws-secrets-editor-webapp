@@ -202,13 +202,9 @@ export async function loadVersion(
   const fullSecret = parseFullSecret(res.SecretString);
   const rawValue = fullSecret[SECRET_KEY];
 
-  if (rawValue === undefined) {
-    throw new Error(
-      `Key "${SECRET_KEY}" not found in version "${versionId}"`
-    );
-  }
-
-  const value = JSON.parse(rawValue);
+  // If the key doesn't exist in this version, return null
+  // (older versions may have a different structure)
+  const value = rawValue !== undefined ? JSON.parse(rawValue) : null;
 
   return {
     value,
