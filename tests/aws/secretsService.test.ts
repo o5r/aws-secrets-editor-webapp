@@ -135,6 +135,115 @@ describe("secretsService", () => {
       expect(savedFull.ANOTHER_KEY).toBe("also_preserved");
       expect(JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS)).toEqual(newValue);
     });
+
+    it("preserves single quotes in values without unicode escaping", async () => {
+      const originalSecret = {
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { old: true } }),
+      };
+
+      mockSmSend
+        .mockResolvedValueOnce({
+          SecretString: JSON.stringify(originalSecret),
+          VersionId: "v1",
+        })
+        .mockResolvedValueOnce({ VersionId: "v2" });
+
+      const newValue = {
+        org1: {
+          label: "Création d'entreprise",
+          loanObjects: [
+            { code: "CRE.EN", label: "ENT-Création d'entreprise" },
+            { code: "IMMEUB", label: "ENT-Immobilier professionnel d'exploitation" },
+            { code: "TRAVAU", label: "ENT-Travaux d'aménagement professionnels" },
+          ],
+        },
+      };
+
+      await saveSecret("123-Admin", "sess-1", newValue);
+
+      const putCall = mockSmSend.mock.calls[1][0];
+      const secretString = putCall.input.SecretString;
+
+      // Must NOT contain \u0027 (escaped single quote)
+      expect(secretString).not.toContain("\\u0027");
+      // Must contain literal single quotes
+      expect(secretString).toContain("d'entreprise");
+      expect(secretString).toContain("d'exploitation");
+      expect(secretString).toContain("d'aménagement");
+
+      // Verify the saved value is still valid JSON and round-trips correctly
+      const savedFull = JSON.parse(secretString);
+      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      expect(savedValue).toEqual(newValue);
+    });
+
+    it("preserves accented and special characters without unicode escaping", async () => {
+      const originalSecret = {
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({}),
+      };
+
+      mockSmSend
+        .mockResolvedValueOnce({
+          SecretString: JSON.stringify(originalSecret),
+          VersionId: "v1",
+        })
+        .mockResolvedValueOnce({ VersionId: "v2" });
+
+      const newValue = {
+        org1: {
+          label: "Données générales de l'établissement",
+          description: "Réf. à vérifier — n°42",
+        },
+      };
+
+      await saveSecret("123-Admin", "sess-1", newValue);
+
+      const putCall = mockSmSend.mock.calls[1][0];
+      const secretString = putCall.input.SecretString;
+
+      // Must not have unnecessary unicode escapes
+      expect(secretString).not.toMatch(/\\u00[0-9a-fA-F]{2}/);
+      // Must contain the literal characters
+      expect(secretString).toContain("Données");
+      expect(secretString).toContain("générales");
+      expect(secretString).toContain("l'établissement");
+      expect(secretString).toContain("vérifier");
+
+      // Round-trip check
+      const savedFull = JSON.parse(secretString);
+      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      expect(savedValue).toEqual(newValue);
+    });
+
+    it("keeps mandatory JSON escapes (double quotes, backslashes, control chars)", async () => {
+      const originalSecret = {
+        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({}),
+      };
+
+      mockSmSend
+        .mockResolvedValueOnce({
+          SecretString: JSON.stringify(originalSecret),
+          VersionId: "v1",
+        })
+        .mockResolvedValueOnce({ VersionId: "v2" });
+
+      const newValue = {
+        withQuote: 'value with "quotes"',
+        withBackslash: "path\\to\\file",
+        withNewline: "line1\nline2",
+        withTab: "col1\tcol2",
+      };
+
+      await saveSecret("123-Admin", "sess-1", newValue);
+
+      const putCall = mockSmSend.mock.calls[1][0];
+      const secretString = putCall.input.SecretString;
+
+      // Must still be valid JSON
+      const savedFull = JSON.parse(secretString);
+      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      expect(savedValue).toEqual(newValue);
+    });
   });
 
   describe("listVersions", () => {

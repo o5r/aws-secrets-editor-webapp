@@ -14,6 +14,25 @@ import { getEnvironment } from "./envConfig";
 const REGION = "eu-west-1";
 const SECRET_KEY = "ALL_ORGANIZATIONS_SETTINGS";
 
+/**
+ * Decode unnecessary \\uXXXX escapes in a JSON string.
+ * JSON.stringify may encode characters like ' as \\u0027, which is valid JSON
+ * but changes the byte representation compared to the original value.
+ * This replaces Unicode escapes with their literal characters, except for
+ * characters that MUST be escaped in JSON strings (" \\ and control chars).
+ */
+function decodeUnicodeEscapes(jsonString: string): string {
+  return jsonString.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex) => {
+    const code = parseInt(hex, 16);
+    // Keep escapes for characters that must be escaped in JSON:
+    // " (0x22), \ (0x5C), and control characters (0x00-0x1F)
+    if (code <= 0x1f || code === 0x22 || code === 0x5c) {
+      return _match;
+    }
+    return String.fromCodePoint(code);
+  });
+}
+
 function buildSecretName(accountName: string): string {
   return `${accountName}/marketplace/elasticbeanstalk/secrets`;
 }
@@ -128,12 +147,12 @@ export async function saveSecret(
   const fullSecret = parseFullSecret(currentRes.SecretString);
 
   // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else
-  fullSecret[SECRET_KEY] = JSON.stringify(newValue);
+  fullSecret[SECRET_KEY] = decodeUnicodeEscapes(JSON.stringify(newValue));
 
   const res = await client.send(
     new PutSecretValueCommand({
       SecretId: secretName,
-      SecretString: JSON.stringify(fullSecret),
+      SecretString: decodeUnicodeEscapes(JSON.stringify(fullSecret)),
     })
   );
 
