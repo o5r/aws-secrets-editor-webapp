@@ -156,20 +156,33 @@ export async function listVersions(
   const env = getEnvironment(envId, sessionId);
   const secretName = buildSecretName(env.accountName);
 
-  const res = await client.send(
-    new ListSecretVersionIdsCommand({
-      SecretId: secretName,
-      IncludeDeprecated: true,
-    })
-  );
+  // Paginate through all versions
+  const allVersions: SecretVersionInfo[] = [];
+  let nextToken: string | undefined;
 
-  return (res.Versions ?? [])
-    .filter((v) => v.VersionId)
-    .map((v) => ({
-      versionId: v.VersionId!,
-      createdDate: v.CreatedDate,
-      versionStages: v.VersionStages ?? [],
-    }))
+  do {
+    const res = await client.send(
+      new ListSecretVersionIdsCommand({
+        SecretId: secretName,
+        IncludeDeprecated: true,
+        NextToken: nextToken,
+      })
+    );
+
+    for (const v of res.Versions ?? []) {
+      if (v.VersionId) {
+        allVersions.push({
+          versionId: v.VersionId,
+          createdDate: v.CreatedDate,
+          versionStages: v.VersionStages ?? [],
+        });
+      }
+    }
+
+    nextToken = res.NextToken;
+  } while (nextToken);
+
+  return allVersions
     .sort((a, b) => {
       const da = a.createdDate?.getTime() ?? 0;
       const db = b.createdDate?.getTime() ?? 0;
