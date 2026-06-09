@@ -160,7 +160,6 @@ export async function listVersions(
     new ListSecretVersionIdsCommand({
       SecretId: secretName,
       IncludeDeprecated: true,
-      MaxResults: 10,
     })
   );
 
