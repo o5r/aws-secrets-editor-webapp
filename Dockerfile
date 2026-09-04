@@ -1,5 +1,8 @@
 FROM node:25-alpine AS build
 
+# Patch base image OS packages (libcrypto3/libssl3 CVE-2026-14456, CVE-2026-45447)
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 
 COPY package.json package-lock.json tsconfig.json .npmrc ./
@@ -9,6 +12,9 @@ COPY public ./public
 RUN npm ci && npm run build
 
 FROM node:25-alpine AS runtime
+
+# Patch base image OS packages (libcrypto3/libssl3 CVE-2026-14456, CVE-2026-45447)
+RUN apk upgrade --no-cache
 
 WORKDIR /app
 
