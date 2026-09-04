@@ -50,6 +50,9 @@ vi.mock("../../src/aws/envConfig", () => ({
 import { loadSecret, saveSecret, listVersions, loadVersion } from "../../src/aws/secretsService";
 import { getSsoSession } from "../../src/aws/sessionStore";
 
+const b64Encode = (s: string) => Buffer.from(s, "utf-8").toString("base64");
+const b64Decode = (s: string) => Buffer.from(s, "base64").toString("utf-8");
+
 describe("secretsService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,7 +69,7 @@ describe("secretsService", () => {
   describe("loadSecret", () => {
     it("extracts ALL_ORGANIZATIONS_SETTINGS from the full secret", async () => {
       const fullSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { key: "val" } }),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({ org1: { key: "val" } })),
         OTHER_KEY: "other_value",
       };
 
@@ -108,7 +111,7 @@ describe("secretsService", () => {
   describe("saveSecret", () => {
     it("preserves other keys when updating ALL_ORGANIZATIONS_SETTINGS", async () => {
       const originalSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { old: true } }),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({ org1: { old: true } })),
         OTHER_KEY: "must_be_preserved",
         ANOTHER_KEY: "also_preserved",
       };
@@ -133,12 +136,12 @@ describe("secretsService", () => {
       const savedFull = JSON.parse(putCall.input.SecretString);
       expect(savedFull.OTHER_KEY).toBe("must_be_preserved");
       expect(savedFull.ANOTHER_KEY).toBe("also_preserved");
-      expect(JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS)).toEqual(newValue);
+      expect(JSON.parse(b64Decode(savedFull.ALL_ORGANIZATIONS_SETTINGS))).toEqual(newValue);
     });
 
     it("preserves single quotes in values without unicode escaping", async () => {
       const originalSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { old: true } }),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({ org1: { old: true } })),
       };
 
       mockSmSend
@@ -163,23 +166,24 @@ describe("secretsService", () => {
 
       const putCall = mockSmSend.mock.calls[1][0];
       const secretString = putCall.input.SecretString;
-
-      // Must NOT contain \u0027 (escaped single quote)
-      expect(secretString).not.toContain("\\u0027");
-      // Must contain literal single quotes
-      expect(secretString).toContain("d'entreprise");
-      expect(secretString).toContain("d'exploitation");
-      expect(secretString).toContain("d'aménagement");
-
-      // Verify the saved value is still valid JSON and round-trips correctly
       const savedFull = JSON.parse(secretString);
-      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      const innerJson = b64Decode(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+
+      // Inner JSON must NOT contain \u0027 (escaped single quote)
+      expect(innerJson).not.toContain("\\u0027");
+      // Must contain literal single quotes
+      expect(innerJson).toContain("d'entreprise");
+      expect(innerJson).toContain("d'exploitation");
+      expect(innerJson).toContain("d'aménagement");
+
+      // Verify the saved value round-trips correctly
+      const savedValue = JSON.parse(innerJson);
       expect(savedValue).toEqual(newValue);
     });
 
     it("preserves accented and special characters without unicode escaping", async () => {
       const originalSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({}),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({})),
       };
 
       mockSmSend
@@ -200,24 +204,25 @@ describe("secretsService", () => {
 
       const putCall = mockSmSend.mock.calls[1][0];
       const secretString = putCall.input.SecretString;
+      const savedFull = JSON.parse(secretString);
+      const innerJson = b64Decode(savedFull.ALL_ORGANIZATIONS_SETTINGS);
 
-      // Must not have unnecessary unicode escapes
-      expect(secretString).not.toMatch(/\\u00[0-9a-fA-F]{2}/);
+      // Inner JSON must not have unnecessary unicode escapes
+      expect(innerJson).not.toMatch(/\\u00[0-9a-fA-F]{2}/);
       // Must contain the literal characters
-      expect(secretString).toContain("Données");
-      expect(secretString).toContain("générales");
-      expect(secretString).toContain("l'établissement");
-      expect(secretString).toContain("vérifier");
+      expect(innerJson).toContain("Données");
+      expect(innerJson).toContain("générales");
+      expect(innerJson).toContain("l'établissement");
+      expect(innerJson).toContain("vérifier");
 
       // Round-trip check
-      const savedFull = JSON.parse(secretString);
-      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      const savedValue = JSON.parse(innerJson);
       expect(savedValue).toEqual(newValue);
     });
 
     it("keeps mandatory JSON escapes (double quotes, backslashes, control chars)", async () => {
       const originalSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({}),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({})),
       };
 
       mockSmSend
@@ -241,7 +246,7 @@ describe("secretsService", () => {
 
       // Must still be valid JSON
       const savedFull = JSON.parse(secretString);
-      const savedValue = JSON.parse(savedFull.ALL_ORGANIZATIONS_SETTINGS);
+      const savedValue = JSON.parse(b64Decode(savedFull.ALL_ORGANIZATIONS_SETTINGS));
       expect(savedValue).toEqual(newValue);
     });
   });
@@ -292,7 +297,7 @@ describe("secretsService", () => {
   describe("loadVersion", () => {
     it("loads a specific version", async () => {
       const fullSecret = {
-        ALL_ORGANIZATIONS_SETTINGS: JSON.stringify({ org1: { versioned: true } }),
+        ALL_ORGANIZATIONS_SETTINGS: b64Encode(JSON.stringify({ org1: { versioned: true } })),
       };
 
       mockSmSend.mockResolvedValue({
