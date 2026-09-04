@@ -81,6 +81,21 @@ function parseFullSecret(secretString: string): Record<string, string> {
   return JSON.parse(secretString);
 }
 
+/**
+ * The ALL_ORGANIZATIONS_SETTINGS value stored in AWS Secrets Manager is a
+ * base64-encoded UTF-8 JSON string. Decode it to the original JSON string.
+ */
+function decodeBase64Value(encoded: string): string {
+  return Buffer.from(encoded, "base64").toString("utf-8");
+}
+
+/**
+ * Encode a UTF-8 JSON string as base64 before storing it in the secret map.
+ */
+function encodeBase64Value(raw: string): string {
+  return Buffer.from(raw, "utf-8").toString("base64");
+}
+
 export interface LoadSecretResult {
   value: unknown;
   versionId?: string;
@@ -112,8 +127,8 @@ export async function loadSecret(
     );
   }
 
-  // The value is itself a JSON string
-  const value = JSON.parse(rawValue);
+  // The stored value is a base64-encoded JSON string
+  const value = JSON.parse(decodeBase64Value(rawValue));
 
   return {
     value,
@@ -146,8 +161,11 @@ export async function saveSecret(
 
   const fullSecret = parseFullSecret(currentRes.SecretString);
 
-  // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else
-  fullSecret[SECRET_KEY] = decodeUnicodeEscapes(JSON.stringify(newValue));
+  // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else.
+  // Value is stored as base64-encoded JSON string.
+  fullSecret[SECRET_KEY] = encodeBase64Value(
+    decodeUnicodeEscapes(JSON.stringify(newValue))
+  );
 
   const res = await client.send(
     new PutSecretValueCommand({
@@ -235,7 +253,8 @@ export async function loadVersion(
 
   // If the key doesn't exist in this version, return null
   // (older versions may have a different structure)
-  const value = rawValue !== undefined ? JSON.parse(rawValue) : null;
+  const value =
+    rawValue !== undefined ? JSON.parse(decodeBase64Value(rawValue)) : null;
 
   return {
     value,
