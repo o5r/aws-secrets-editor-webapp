@@ -14,6 +14,11 @@ import {
   listVersions,
   loadVersion,
 } from "./aws/secretsService";
+import {
+  discoverMarketplaceApiServices,
+  restartMarketplaceApi,
+  getDeploymentStatus,
+} from "./aws/ecsService";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -69,6 +74,18 @@ const writeRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many write requests, please try again later" },
+});
+
+// Restarting an ECS service is disruptive — keep this much stricter than
+// regular writes.
+const restartRateLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Too many restart requests, please wait before trying again",
+  },
 });
 
 // Start SSO device authorization flow
@@ -211,6 +228,130 @@ app.get("/api/secret/version/:versionId", async (req, res) => {
   try {
     const result = await loadVersion(envId, sessionId, versionId);
     res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: extractErrorMessage(err) });
+  }
+});
+
+// ── ECS: marketplace API restart ──────────────────────────────────────
+// Discover the marketplace API service(s) for the selected environment
+app.get("/api/ecs/services", async (req, res) => {
+  const envId = req.query.envId as string;
+  const sessionId = req.query.sessionId as string;
+
+  if (!envId || !sessionId) {
+    res.status(400).json({ error: "envId and sessionId are required" });
+    return;
+  }
+
+  try {
+    const env = getEnvironment(envId, sessionId);
+    const { matches, inspected } = await discoverMarketplaceApiServices(
+      envId,
+      sessionId
+    );
+    res.json({
+      environment: env.accountName,
+      services: matches,
+      inspectedCount: inspected.length,
+      // Only surfaced when nothing matched, to help diagnose naming drift.
+      inspected: matches.length === 0 ? inspected : undefined,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: extractErrorMessage(err) });
+  }
+});
+
+// Force a new deployment of the selected marketplace API services
+app.post("/api/ecs/restart", restartRateLimiter, async (req, res) => {
+  const {
+    envId,
+    sessionId,
+    services,
+    confirmation,
+    acknowledgeProduction,
+    force,
+  } = req.body ?? {};
+
+  if (
+    !envId ||
+    !sessionId ||
+    !confirmation ||
+    !Array.isArray(services) ||
+    services.length === 0
+  ) {
+    res.status(400).json({
+      error:
+        "envId, sessionId, confirmation and a non-empty services array are required",
+    });
+    return;
+  }
+
+  try {
+    const env = getEnvironment(envId, sessionId);
+    const result = await restartMarketplaceApi(envId, sessionId, {
+      targets: services,
+      confirmation,
+      acknowledgeProduction,
+      force,
+    });
+    console.log(
+      `[ecs-restart] env=${env.accountName} services=` +
+        result.restarted
+          .map((s) => `${s.cluster}/${s.serviceName}#${s.deploymentId ?? "n/a"}`)
+          .join(",")
+    );
+    res.json({
+      ...result,
+      message: `Restart triggered for ${result.restarted.length} service(s)`,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: extractErrorMessage(err) });
+  }
+});
+
+/**
+ * Parse the `services` query param, a comma-separated list of
+ * `cluster/serviceName` pairs. ECS names cannot contain `/`, so this is
+ * unambiguous.
+ */
+function parseServiceTargets(raw: string): { cluster: string; serviceName: string }[] {
+  return raw
+    .split(",")
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const idx = pair.indexOf("/");
+      if (idx <= 0 || idx === pair.length - 1) {
+        throw new Error(`Invalid service reference: "${pair}"`);
+      }
+      return {
+        cluster: pair.slice(0, idx),
+        serviceName: pair.slice(idx + 1),
+      };
+    });
+}
+
+// Poll the rollout status of the marketplace API deployments
+app.get("/api/ecs/deployments", async (req, res) => {
+  const envId = req.query.envId as string;
+  const sessionId = req.query.sessionId as string;
+  const services = req.query.services as string;
+
+  if (!envId || !sessionId || !services) {
+    res.status(400).json({
+      error: "envId, sessionId and services are required",
+    });
+    return;
+  }
+
+  try {
+    const targets = parseServiceTargets(services);
+    const status = await getDeploymentStatus(envId, sessionId, targets);
+    res.json(status);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: extractErrorMessage(err) });
