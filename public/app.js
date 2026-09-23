@@ -15,6 +15,9 @@ let pollTimer = null;
 let saveSessionTimer = null;
 let selectedVersions = []; // {versionId, createdDate} — max 2 for comparison
 let versionsData = []; // cached version list from last loadVersionHistory
+let ecsServices = []; // marketplace API services for the current environment
+let selectedEcsServices = []; // subset of ecsServices to restart
+let ecsPollTimer = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 function setStatus(elId, message, type = "info") {
@@ -247,7 +250,10 @@ async function restoreSession() {
     }
 
     loadVersionHistory();
+    openStep("step4");
   }
+
+  loadEcsServices();
 
   setStatus("envStatus", "Session restored. Environment re-selected.", "success");
   return true;
@@ -414,6 +420,11 @@ window.loadSecretValue = async function () {
   currentEnvId = envId;
   currentEnvName = sel.options[sel.selectedIndex].dataset.accountName;
 
+  // Environment changed — drop any ECS state from the previous one
+  stopEcsPolling();
+  ecsServices = [];
+  selectedEcsServices = [];
+
   // Update badges
   const badge = document.getElementById("envBadge");
   badge.textContent = currentEnvName;
@@ -432,9 +443,11 @@ window.loadSecretValue = async function () {
     // Initialize editor
     initEditor(result.value);
     openStep("step3");
+    openStep("step4");
 
     // Load version history
     loadVersionHistory();
+    loadEcsServices();
     saveSession();
   } catch (err) {
     setStatus("envStatus", `Failed to load secret: ${err.message}`, "error");
@@ -579,12 +592,25 @@ window.finalSave = async function () {
 
     setStatus(
       "editorMainStatus",
-      `Secret updated successfully! New version: ${result.versionId?.substring(0, 8)}...`,
+      `Secret updated successfully! New version: ${result.versionId?.substring(0, 8)}...` +
+        `<br><small>Go to step 4 to restart the marketplace API — the running tasks ` +
+        `are still using the previous value.</small>`,
       "success"
     );
 
     // Refresh version history
     loadVersionHistory();
+
+    // Surface step 4: the change is not live until the tasks are replaced
+    openStep("step4");
+    await loadEcsServices();
+    setStatus(
+      "ecsStatus",
+      "The secret changed — restart the services below to apply it.",
+      "warning"
+    );
+    document.getElementById("step4").scrollIntoView({ behavior: "smooth", block: "start" });
+
     saveSession();
   } catch (err) {
     closeConfirmModal();
@@ -802,6 +828,325 @@ window.restoreVersion = function () {
   setStatus("editorMainStatus", "Version content loaded into editor. Review and save when ready.", "warning");
 };
 
+// ── ECS: Marketplace API restart (step 4) ─────────────────────────────
+function stopEcsPolling() {
+  if (ecsPollTimer) {
+    clearInterval(ecsPollTimer);
+    ecsPollTimer = null;
+  }
+}
+
+function serviceKey(svc) {
+  return `${svc.cluster}/${svc.serviceName}`;
+}
+
+function emptyRow(html) {
+  return `<tr><td colspan="6" class="ecs-empty">${html}</td></tr>`;
+}
+
+/** Map a service to a compact state badge. */
+function ecsStateBadge(svc) {
+  if (svc.deploymentInProgress) return { cls: "busy", label: "deploying" };
+  const rollout = svc.primaryDeployment?.rolloutState;
+  if (rollout === "FAILED") return { cls: "bad", label: "failed" };
+  if (svc.desiredCount === 0) return { cls: "idle", label: "stopped" };
+  if (rollout === "COMPLETED") return { cls: "ok", label: "running" };
+  return { cls: "idle", label: rollout || svc.status || "unknown" };
+}
+
+function updateEcsSummary() {
+  const summary = document.getElementById("ecsSummary");
+  const hint = document.getElementById("step4Hint");
+  const btn = document.getElementById("btnRestartEcs");
+  const n = selectedEcsServices.length;
+
+  btn.disabled = n === 0;
+
+  if (ecsServices.length === 0) {
+    summary.textContent = "";
+    hint.textContent = "";
+    return;
+  }
+
+  summary.textContent =
+    n === 0
+      ? "Select at least one service"
+      : `${n} of ${ecsServices.length} service(s) selected`;
+
+  const deploying = ecsServices.filter((s) => s.deploymentInProgress).length;
+  hint.textContent = deploying
+    ? `${deploying} deploying`
+    : `${ecsServices.length} service(s)`;
+}
+
+function renderEcsServices() {
+  const body = document.getElementById("ecsServiceList");
+  body.innerHTML = "";
+
+  for (const svc of ecsServices) {
+    const key = serviceKey(svc);
+    const state = ecsStateBadge(svc);
+    // A service scaled to 0 has nothing to restart
+    const restartable = svc.desiredCount > 0;
+    const checked = selectedEcsServices.some((s) => serviceKey(s) === key);
+
+    const tr = document.createElement("tr");
+    tr.className = `${checked ? "selected" : ""} ${restartable ? "" : "disabled"}`.trim();
+    tr.title = restartable
+      ? `${svc.serviceName}\ncluster: ${svc.cluster}`
+      : `${svc.serviceName} is scaled to 0 — nothing to restart`;
+
+    tr.innerHTML =
+      `<td><input type="checkbox" ${checked ? "checked" : ""} ${restartable ? "" : "disabled"} /></td>` +
+      `<td class="ecs-role">${escapeHtml(svc.role === "other" ? "service" : svc.role)}</td>` +
+      `<td class="ecs-name" title="${escapeHtml(svc.serviceName)}">${escapeHtml(svc.serviceName)}</td>` +
+      `<td><span class="ecs-state ${state.cls}">${escapeHtml(state.label)}</span></td>` +
+      `<td class="ecs-tasks">${svc.runningCount}/${svc.desiredCount}</td>` +
+      `<td class="ecs-taskdef" title="${escapeHtml(svc.taskDefinition || "")}">${escapeHtml(svc.taskDefinition || "—")}</td>`;
+
+    const cb = tr.querySelector("input");
+
+    const toggle = (value) => {
+      if (!restartable) return;
+      const idx = selectedEcsServices.findIndex((s) => serviceKey(s) === key);
+      if (value && idx < 0) selectedEcsServices.push(svc);
+      if (!value && idx >= 0) selectedEcsServices.splice(idx, 1);
+      cb.checked = value;
+      tr.classList.toggle("selected", value);
+      updateEcsSummary();
+    };
+
+    cb.onclick = (e) => {
+      e.stopPropagation();
+      toggle(cb.checked);
+    };
+    tr.onclick = () => toggle(!cb.checked);
+
+    body.appendChild(tr);
+  }
+
+  updateEcsSummary();
+}
+
+window.toggleAllEcsServices = function (select) {
+  selectedEcsServices = select
+    ? ecsServices.filter((svc) => svc.desiredCount > 0)
+    : [];
+  renderEcsServices();
+};
+
+window.loadEcsServices = async function () {
+  if (!currentEnvId || !sessionId) return;
+
+  const body = document.getElementById("ecsServiceList");
+  body.innerHTML = emptyRow('<span class="loading-spinner"></span>Loading...');
+  document.getElementById("btnRestartEcs").disabled = true;
+
+  try {
+    const data = await api(
+      "GET",
+      `/api/ecs/services?envId=${currentEnvId}&sessionId=${sessionId}`
+    );
+    ecsServices = data.services || [];
+
+    if (ecsServices.length === 0) {
+      selectedEcsServices = [];
+      updateEcsSummary();
+      body.innerHTML = emptyRow(
+        `No marketplace API service matched (${data.inspectedCount || 0} services inspected).`
+      );
+      return;
+    }
+
+    // Keep the previous selection across refreshes; default to everything
+    // restartable, since web + worker + cron all read the secret at startup.
+    const previous = selectedEcsServices.map(serviceKey);
+    selectedEcsServices = ecsServices.filter((svc) =>
+      previous.length > 0
+        ? previous.includes(serviceKey(svc))
+        : svc.desiredCount > 0
+    );
+
+    renderEcsServices();
+  } catch (err) {
+    ecsServices = [];
+    selectedEcsServices = [];
+    updateEcsSummary();
+    body.innerHTML = emptyRow(
+      `<span style="color: var(--danger);">Error: ${escapeHtml(err.message)}</span>`
+    );
+  }
+};
+
+window.openRestartModal = function () {
+  openStep("step4");
+  if (selectedEcsServices.length === 0) {
+    setStatus(
+      "ecsStatus",
+      "Select at least one marketplace API service to restart.",
+      "warning"
+    );
+    return;
+  }
+
+  const isProd = currentEnvName === "production";
+
+  document.getElementById("restartCount").textContent =
+    selectedEcsServices.length === 1
+      ? `1 service (${selectedEcsServices[0].role})`
+      : `${selectedEcsServices.length} services (${selectedEcsServices.map((s) => s.role).join(", ")})`;
+
+  document.getElementById("restartServiceTable").innerHTML = selectedEcsServices
+    .map(
+      (s) =>
+        `<tr style="border-bottom: 1px solid var(--border);">` +
+          `<td style="padding: 6px 0; font-family: monospace; word-break: break-all;">${escapeHtml(s.serviceName)}</td>` +
+          `<td style="padding: 6px 0;">${s.runningCount}/${s.desiredCount}</td>` +
+          `<td style="padding: 6px 0; font-family: monospace; word-break: break-all;">${escapeHtml(s.taskDefinition || "unknown")}</td>` +
+        `</tr>`
+    )
+    .join("");
+
+  const badge = document.getElementById("restartEnvBadge");
+  badge.textContent = currentEnvName;
+  badge.className = `env-badge ${currentEnvName}`;
+
+  document.getElementById("restartProdWarning").classList.toggle("hidden", !isProd);
+  document.getElementById("restartProdAckLabel").classList.toggle("hidden", !isProd);
+  document.getElementById("restartProdAck").checked = false;
+  document.getElementById("restartConfirmInput").value = "";
+  document.getElementById("btnConfirmRestart").disabled = true;
+
+  document.getElementById("restartModal").classList.add("active");
+  document.getElementById("restartConfirmInput").focus();
+};
+
+window.closeRestartModal = function () {
+  document.getElementById("restartModal").classList.remove("active");
+};
+
+window.checkRestartInput = function () {
+  const typed = document
+    .getElementById("restartConfirmInput")
+    .value.trim()
+    .toLowerCase();
+  const isProd = currentEnvName === "production";
+  const acked = document.getElementById("restartProdAck").checked;
+  document.getElementById("btnConfirmRestart").disabled =
+    typed !== currentEnvName || (isProd && !acked);
+};
+
+window.confirmRestart = async function () {
+  if (selectedEcsServices.length === 0) return;
+
+  const targets = selectedEcsServices.map((s) => ({
+    cluster: s.cluster,
+    serviceName: s.serviceName,
+  }));
+
+  const btn = document.getElementById("btnConfirmRestart");
+  btn.disabled = true;
+  btn.textContent = "Restarting...";
+
+  try {
+    const result = await api("POST", "/api/ecs/restart", {
+      envId: currentEnvId,
+      sessionId,
+      services: targets,
+      confirmation: currentEnvName,
+      acknowledgeProduction: currentEnvName === "production" ? true : undefined,
+    });
+
+    closeRestartModal();
+    setStatus(
+      "ecsStatus",
+      `<span class="loading-spinner"></span>Restart triggered on ` +
+        `<strong>${result.restarted.length} service(s)</strong>. Waiting for the rollout to complete...`,
+      "warning"
+    );
+    startEcsDeploymentPolling(targets);
+  } catch (err) {
+    closeRestartModal();
+    setStatus("ecsStatus", `Restart failed: ${err.message}`, "error");
+  } finally {
+    btn.textContent = "Restart";
+    btn.disabled = false;
+  }
+};
+
+function startEcsDeploymentPolling(targets) {
+  stopEcsPolling();
+
+  const startedAt = Date.now();
+  const timeoutMs = 15 * 60 * 1000;
+  const query = targets.map((t) => `${t.cluster}/${t.serviceName}`).join(",");
+
+  ecsPollTimer = setInterval(async () => {
+    try {
+      const report = await api(
+        "GET",
+        `/api/ecs/deployments?envId=${currentEnvId}&sessionId=${sessionId}` +
+          `&services=${encodeURIComponent(query)}`
+      );
+
+      const detail = report.services
+        .map(
+          (s) =>
+            `${escapeHtml(s.role === "other" ? s.serviceName : s.role)}: ` +
+            `${s.runningCount}/${s.desiredCount} ` +
+            `(${escapeHtml((s.primaryDeployment?.rolloutState || "IN_PROGRESS").toLowerCase())})`
+        )
+        .join(" &middot; ");
+
+      if (report.anyFailed) {
+        stopEcsPolling();
+        const failed = report.services
+          .filter((s) => s.primaryDeployment?.rolloutState === "FAILED")
+          .map(
+            (s) =>
+              `${escapeHtml(s.serviceName)}: ` +
+              escapeHtml(s.primaryDeployment?.rolloutStateReason || "no reason reported")
+          )
+          .join("<br>");
+        setStatus("ecsStatus", `Deployment FAILED<br>${failed}`, "error");
+        loadEcsServices();
+        return;
+      }
+
+      if (report.allStable) {
+        stopEcsPolling();
+        setStatus(
+          "ecsStatus",
+          `Restart complete — all ${report.services.length} service(s) are running with the new secret.<br>` +
+            `<small>${detail}</small>`,
+          "success"
+        );
+        markStepDone(4);
+        loadEcsServices();
+        return;
+      }
+
+      if (Date.now() - startedAt > timeoutMs) {
+        stopEcsPolling();
+        setStatus(
+          "ecsStatus",
+          `Still deploying after 15 minutes — check the AWS console.<br><small>${detail}</small>`,
+          "warning"
+        );
+        return;
+      }
+
+      setStatus(
+        "ecsStatus",
+        `<span class="loading-spinner"></span>Deploying...<br><small>${detail}</small>`,
+        "warning"
+      );
+    } catch (err) {
+      stopEcsPolling();
+      setStatus("ecsStatus", `Lost track of the deployment: ${err.message}`, "error");
+    }
+  }, 10000);
+}
 // ── JSON Diff Generator ────────────────────────────────────────────────
 function generateDiff(oldObj, newObj) {
   const oldLines = JSON.stringify(oldObj, null, 2).split("\n");

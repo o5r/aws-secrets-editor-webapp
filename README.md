@@ -18,6 +18,7 @@ Web application to safely edit the `ALL_ORGANIZATIONS_SETTINGS` JSON value in AW
 - **Double confirmation** — type the environment name to confirm writes, preventing accidental updates.
 - **Version history** — browse previous secret versions, view them read-only, and restore any past version.
 - **Safe updates** — only the `ALL_ORGANIZATIONS_SETTINGS` key is modified; all other keys in the secret are preserved untouched.
+- **Marketplace API restart** — force a new ECS deployment of the `web`, `worker` and `cron` services so the running tasks pick up the new secret, with live rollout tracking and hard safeguards on production.
 - **Rate limiting** — SSO and write endpoints are rate-limited to prevent abuse.
 
 ### Prerequisites
@@ -62,16 +63,59 @@ The `~/.aws` mount gives the container read-only access to your SSO profile defi
 2. **Environment** — pick a sandbox, staging, or production account from the discovered environments.
 3. **Edit** — the `ALL_ORGANIZATIONS_SETTINGS` value is loaded into a tree editor. Add, edit, or remove organization settings as needed.
 4. **Review & Save** — click "Review Changes" to see a diff, then confirm by typing the environment name.
+5. **Restart** — after saving, restart the marketplace API services so the new secret is actually loaded (see below).
 
-### Secret path convention
+### Restarting the marketplace API
 
-The secret is expected at `<environment>/marketplace/elasticbeanstalk/secrets` (e.g. `sandbox/marketplace/elasticbeanstalk/secrets`), where the environment name is derived from the AWS account name (lowercased).
+ECS tasks read Secrets Manager values at startup, so a secret update has no effect until the
+tasks are replaced. The marketplace API runs as **three** services that all load the secret:
+
+| Role | Example service name |
+|------|----------------------|
+| `web` | `sandbox-marketplace-api-web` |
+| `worker` | `sandbox-marketplace-api-worker` |
+| `cron` | `sandbox-marketplace-api-cron` |
+
+The sidebar of step 3 lists them for the selected environment with all restartable ones
+pre-selected. **Restart** issues an ECS `UpdateService` with `forceNewDeployment: true` on each
+selected service, then polls every 10s until every rollout completes or one fails.
+
+Safeguards — the backend re-validates everything, the UI guards are only a first line of defence:
+
+- Only services recognised as part of the marketplace API can be restarted. Targets are
+  re-resolved server-side, so the endpoint cannot be used to restart an arbitrary ECS service.
+- The environment name must be typed to confirm, and **production additionally requires an
+  explicit acknowledgement checkbox**.
+- A service with a desired count of `0` is never restarted.
+- A restart is refused while a deployment is already in progress (unless explicitly forced).
+- **All targets are validated before any `UpdateService` call**, so a rejected batch never
+  leaves the three services in a half-restarted state.
+- The restart endpoint is rate-limited to 3 requests per 5 minutes.
+
+#### Service matching
+
+A service belongs to the marketplace API when its name contains **every** required token
+(case-insensitive). Default: `marketplace,api` — which matches the `-web`, `-worker` and `-cron`
+variants. Override `MARKETPLACE_API_SERVICE_TOKENS` if the infrastructure naming changes. The
+role shown in the UI is derived from the `web` / `worker` / `cron` suffix.
+
+#### Required IAM permissions
+
+The SSO permission set used to connect must additionally allow:
+
+```
+ecs:ListClusters
+ecs:ListServices
+ecs:DescribeServices
+ecs:UpdateService
+```
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
+| `MARKETPLACE_API_SERVICE_TOKENS` | `marketplace,api` | Comma-separated tokens an ECS service name must **all** contain to be considered part of the marketplace API |
 
 ### Testing
 

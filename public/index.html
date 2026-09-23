@@ -356,6 +356,102 @@
     @keyframes spin { to { transform: rotate(360deg); } }
 
     .hidden { display: none !important; }
+
+    /* ECS services (marketplace API: web / worker / cron) */
+    .step-hint {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .ecs-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .ecs-summary {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .ecs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      table-layout: fixed;
+    }
+
+    .ecs-table th {
+      text-align: left;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      font-weight: 700;
+      padding: 0 10px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ecs-table td {
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .ecs-table tbody tr { cursor: pointer; }
+    .ecs-table tbody tr:hover { background: #f8fafc; }
+    .ecs-table tbody tr.selected { background: #eff6ff; }
+    .ecs-table tbody tr.disabled { cursor: not-allowed; opacity: 0.55; }
+
+    .ecs-table input[type="checkbox"] {
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .ecs-role {
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    /* Long ECS names: ellipsise rather than wrap or overflow */
+    .ecs-name,
+    .ecs-taskdef {
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ecs-tasks { font-variant-numeric: tabular-nums; }
+
+    .ecs-state {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 3px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .ecs-state.ok { background: #dcfce7; color: #166534; }
+    .ecs-state.busy { background: #fef3c7; color: #92400e; }
+    .ecs-state.bad { background: #fee2e2; color: #991b1b; }
+    .ecs-state.idle { background: #e2e8f0; color: #475569; }
+
+    .ecs-empty {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      padding: 16px 10px;
+      text-align: center;
+    }
+
   </style>
 </head>
 <body>
@@ -456,6 +552,58 @@
         <div id="editorMainStatus"></div>
       </div>
     </div>
+
+    <!-- Step 4: Restart the marketplace API -->
+    <div class="step" id="step4">
+      <div class="step-header" onclick="toggleStep('step4')">
+        <div class="step-number" id="step4-num">4</div>
+        <div class="step-title">Restart Marketplace API</div>
+        <span id="step4Hint" class="step-hint"></span>
+      </div>
+      <div class="step-body">
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+          ECS tasks read Secrets Manager at startup, so a saved secret only takes effect
+          once the tasks are replaced. Restarting forces a new deployment — tasks are
+          rolled following each service's deployment configuration.
+        </p>
+
+        <div class="ecs-toolbar">
+          <button class="btn-secondary btn-sm" onclick="loadEcsServices()">
+            Refresh
+          </button>
+          <button class="btn-secondary btn-sm" onclick="toggleAllEcsServices(true)">
+            Select All
+          </button>
+          <button class="btn-secondary btn-sm" onclick="toggleAllEcsServices(false)">
+            Select None
+          </button>
+          <button class="btn-danger" id="btnRestartEcs" onclick="openRestartModal()" disabled>
+            Restart Selected
+          </button>
+          <span id="ecsSummary" class="ecs-summary"></span>
+        </div>
+
+        <table class="ecs-table" id="ecsTable">
+          <thead>
+            <tr>
+              <th style="width: 32px;"></th>
+              <th style="width: 90px;">Role</th>
+              <th>Service</th>
+              <th style="width: 110px;">State</th>
+              <th style="width: 80px;">Tasks</th>
+              <th style="width: 220px;">Task definition</th>
+            </tr>
+          </thead>
+          <tbody id="ecsServiceList">
+            <tr>
+              <td colspan="6" class="ecs-empty">Load a secret to see ECS services</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div id="ecsStatus"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Diff Review Modal -->
@@ -546,6 +694,58 @@
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" onclick="closeCompareModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ECS Restart Confirmation Modal -->
+  <div class="modal-overlay" id="restartModal">
+    <div class="modal" style="width: 560px;">
+      <div class="modal-header">
+        <h2>Restart Marketplace API</h2>
+        <button class="btn-secondary btn-sm" onclick="closeRestartModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="status warning" style="margin-bottom: 16px;">
+          You are about to force a new deployment of
+          <strong id="restartCount"></strong> on
+          <span class="env-badge" id="restartEnvBadge"></span>
+        </div>
+        <div id="restartProdWarning" class="status error hidden" style="margin-bottom: 16px;">
+          <strong>PRODUCTION.</strong> Tasks will be replaced following each
+          service's deployment configuration. Live traffic may be affected.
+          Tick the box below to acknowledge.
+        </div>
+        <table style="width: 100%; font-size: 0.8rem; margin-bottom: 16px; border-collapse: collapse;">
+          <thead>
+            <tr style="text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border);">
+              <th style="padding: 4px 0;">Service</th>
+              <th style="padding: 4px 0;">Tasks</th>
+              <th style="padding: 4px 0;">Task definition</th>
+            </tr>
+          </thead>
+          <tbody id="restartServiceTable"></tbody>
+        </table>
+        <label id="restartProdAckLabel" class="hidden" style="display: flex; gap: 8px; align-items: flex-start; font-size: 0.85rem; margin-bottom: 16px;">
+          <input type="checkbox" id="restartProdAck" onchange="checkRestartInput()" style="margin-top: 3px;" />
+          <span>I understand this restarts the <strong>production</strong> marketplace API.</span>
+        </label>
+        <p style="margin-bottom: 8px; color: var(--text-muted); font-size: 0.85rem;">
+          Type the environment name to confirm.
+        </p>
+        <input
+          type="text"
+          id="restartConfirmInput"
+          placeholder="Type environment name..."
+          style="width: 100%;"
+          oninput="checkRestartInput()"
+        />
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeRestartModal()">Cancel</button>
+        <button class="btn-danger" id="btnConfirmRestart" onclick="confirmRestart()" disabled>
+          Restart
+        </button>
       </div>
     </div>
   </div>

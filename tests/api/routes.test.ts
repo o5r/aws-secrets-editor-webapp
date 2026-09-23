@@ -37,6 +37,12 @@ vi.mock("../../src/aws/secretsService", () => ({
   loadVersion: vi.fn(),
 }));
 
+vi.mock("../../src/aws/ecsService", () => ({
+  discoverMarketplaceApiServices: vi.fn(),
+  restartMarketplaceApi: vi.fn(),
+  getDeploymentStatus: vi.fn(),
+}));
+
 vi.mock("../../src/aws/envConfig", () => ({
   registerDynamicEnvironments: vi.fn(),
   getEnvironment: vi.fn(() => ({
@@ -58,6 +64,27 @@ import {
   listVersions,
   loadVersion,
 } from "../../src/aws/secretsService";
+import {
+  discoverMarketplaceApiServices,
+  restartMarketplaceApi,
+  getDeploymentStatus,
+} from "../../src/aws/ecsService";
+
+/** Build an EcsServiceInfo-shaped fixture for the given role. */
+function svc(role: "web" | "worker" | "cron") {
+  return {
+    cluster: "marketplace-sandbox",
+    clusterArn: "arn:cluster",
+    serviceName: `sandbox-marketplace-api-${role}`,
+    serviceArn: `arn:service:${role}`,
+    role,
+    status: "ACTIVE",
+    desiredCount: 2,
+    runningCount: 2,
+    pendingCount: 0,
+    deploymentInProgress: false,
+  };
+}
 
 describe("API Routes", () => {
   beforeEach(() => {
@@ -265,6 +292,209 @@ describe("API Routes", () => {
       const res = await request(app).get("/api/secret/version/v1?envId=123-Admin&sessionId=sess-1");
       expect(res.status).toBe(500);
       expect(res.body.error).toContain("version not found");
+    });
+  });
+
+  describe("GET /api/ecs/services", () => {
+    it("returns 400 without params", async () => {
+      const res = await request(app).get("/api/ecs/services");
+      expect(res.status).toBe(400);
+    });
+
+    it("returns the marketplace api services", async () => {
+      vi.mocked(discoverMarketplaceApiServices).mockResolvedValue({
+        matches: [
+          svc("web"),
+          svc("worker"),
+          svc("cron"),
+        ],
+        inspected: [
+          {
+            cluster: "marketplace-sandbox",
+            serviceName: "sandbox-marketplace-api-web",
+          },
+        ],
+      });
+
+      const res = await request(app).get(
+        "/api/ecs/services?envId=123-Admin&sessionId=sess-1"
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.environment).toBe("sandbox");
+      expect(res.body.services).toHaveLength(3);
+      expect(res.body.services.map((s: any) => s.role)).toEqual([
+        "web",
+        "worker",
+        "cron",
+      ]);
+      expect(res.body.inspected).toBeUndefined();
+    });
+
+    it("exposes the inspected list when nothing matched", async () => {
+      vi.mocked(discoverMarketplaceApiServices).mockResolvedValue({
+        matches: [],
+        inspected: [{ cluster: "c", serviceName: "sandbox-billing-api" }],
+      });
+
+      const res = await request(app).get(
+        "/api/ecs/services?envId=123-Admin&sessionId=sess-1"
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.services).toHaveLength(0);
+      expect(res.body.inspected).toHaveLength(1);
+    });
+
+    it("returns 500 on error", async () => {
+      vi.mocked(discoverMarketplaceApiServices).mockRejectedValue(
+        new Error("ecs:ListClusters denied")
+      );
+      const res = await request(app).get(
+        "/api/ecs/services?envId=123-Admin&sessionId=sess-1"
+      );
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("ecs:ListClusters denied");
+    });
+  });
+
+  describe("GET /api/ecs/deployments", () => {
+    it("returns 400 without params", async () => {
+      const res = await request(app).get(
+        "/api/ecs/deployments?envId=123-Admin&sessionId=sess-1"
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it("parses the services list and returns the rollout status", async () => {
+      vi.mocked(getDeploymentStatus).mockResolvedValue({
+        services: [
+          { ...svc("web"), stable: true },
+          { ...svc("worker"), stable: true },
+        ],
+        allStable: true,
+        anyFailed: false,
+      });
+
+      const res = await request(app).get(
+        "/api/ecs/deployments?envId=123-Admin&sessionId=sess-1&services=" +
+          encodeURIComponent(
+            "marketplace-sandbox/sandbox-marketplace-api-web," +
+              "marketplace-sandbox/sandbox-marketplace-api-worker"
+          )
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.allStable).toBe(true);
+      expect(vi.mocked(getDeploymentStatus).mock.calls[0][2]).toEqual([
+        {
+          cluster: "marketplace-sandbox",
+          serviceName: "sandbox-marketplace-api-web",
+        },
+        {
+          cluster: "marketplace-sandbox",
+          serviceName: "sandbox-marketplace-api-worker",
+        },
+      ]);
+    });
+
+    it("returns 500 on a malformed services list", async () => {
+      const res = await request(app).get(
+        "/api/ecs/deployments?envId=123-Admin&sessionId=sess-1&services=nocluster"
+      );
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("Invalid service reference");
+    });
+
+    it("returns 500 on error", async () => {
+      vi.mocked(getDeploymentStatus).mockRejectedValue(
+        new Error("service not found")
+      );
+      const res = await request(app).get(
+        "/api/ecs/deployments?envId=123-Admin&sessionId=sess-1" +
+          "&services=c%2Fsandbox-marketplace-api-web"
+      );
+      expect(res.status).toBe(500);
+    });
+  });
+
+  // NOTE: /api/ecs/restart is rate limited to 3 requests / 5 min, so this
+  // block must not issue more than 3 POSTs in total.
+  describe("POST /api/ecs/restart", () => {
+    it("returns 400 with an empty services array", async () => {
+      const res = await request(app).post("/api/ecs/restart").send({
+        envId: "123-Admin",
+        sessionId: "sess-1",
+        confirmation: "sandbox",
+        services: [],
+      });
+      expect(res.status).toBe(400);
+      expect(restartMarketplaceApi).not.toHaveBeenCalled();
+    });
+
+    it("triggers the restart on every submitted service", async () => {
+      vi.mocked(restartMarketplaceApi).mockResolvedValue({
+        environment: "sandbox",
+        restarted: [
+          {
+            cluster: "marketplace-sandbox",
+            serviceName: "sandbox-marketplace-api-web",
+            role: "web",
+            deploymentId: "ecs-svc/1",
+          },
+          {
+            cluster: "marketplace-sandbox",
+            serviceName: "sandbox-marketplace-api-worker",
+            role: "worker",
+            deploymentId: "ecs-svc/2",
+          },
+        ],
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const services = [
+        {
+          cluster: "marketplace-sandbox",
+          serviceName: "sandbox-marketplace-api-web",
+        },
+        {
+          cluster: "marketplace-sandbox",
+          serviceName: "sandbox-marketplace-api-worker",
+        },
+      ];
+
+      const res = await request(app).post("/api/ecs/restart").send({
+        envId: "123-Admin",
+        sessionId: "sess-1",
+        services,
+        confirmation: "sandbox",
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.restarted).toHaveLength(2);
+      expect(res.body.message).toContain("2 service(s)");
+      expect(vi.mocked(restartMarketplaceApi).mock.calls[0][2]).toMatchObject({
+        targets: services,
+        confirmation: "sandbox",
+      });
+    });
+
+    it("returns 500 when the service layer refuses", async () => {
+      vi.mocked(restartMarketplaceApi).mockRejectedValue(
+        new Error("Restarting a production service requires an acknowledgement")
+      );
+
+      const res = await request(app).post("/api/ecs/restart").send({
+        envId: "123-Admin",
+        sessionId: "sess-1",
+        services: [
+          {
+            cluster: "marketplace-prod",
+            serviceName: "prod-marketplace-api-web",
+          },
+        ],
+        confirmation: "production",
+      });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("acknowledgement");
     });
   });
 

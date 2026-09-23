@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@aws-sdk/client-ecs": "3.989.0",
     "@aws-sdk/client-secrets-manager": "3.989.0",
     "@aws-sdk/client-sso": "3.989.0",
     "@aws-sdk/client-sso-oidc": "3.989.0",
