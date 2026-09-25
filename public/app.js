@@ -1,13 +1,19 @@
 import {
   JSONEditor,
 } from "https://cdn.jsdelivr.net/npm/vanilla-jsoneditor@2/standalone.js";
+import { decodeSettings, encodeSettings } from "./secretCodec.js";
 
 // ── State ──────────────────────────────────────────────────────────────
+const MODE_AWS = "aws";
+const MODE_LOCAL = "local";
+
+let mode = MODE_AWS;
 let sessionId = null;
 let currentProfileName = null;
 let currentEnvId = null;
 let currentEnvName = null;
-let originalValue = null; // The value as loaded from AWS
+let originalValue = null; // The value as loaded from AWS (or pasted, in local mode)
+let localSourceValue = null; // The exact base64 string pasted in local mode
 let editor = null;
 let versionViewerEditor = null;
 let versionToRestore = null;
@@ -140,11 +146,13 @@ async function saveSession() {
     }
 
     const state = {
+      mode,
       sessionId,
       currentProfileName,
       currentEnvId,
       currentEnvName,
       originalValue,
+      localSourceValue,
       editorContent,
       timestamp: Date.now(),
     };
@@ -187,7 +195,15 @@ async function getSavedSession() {
 
 async function restoreSession() {
   const saved = await getSavedSession();
-  if (!saved || !saved.sessionId || !saved.currentEnvId) return false;
+  if (!saved) return false;
+
+  if (saved.mode === MODE_LOCAL) {
+    mode = MODE_LOCAL;
+    applyMode();
+    return restoreLocalSession(saved);
+  }
+
+  if (!saved.sessionId || !saved.currentEnvId) return false;
 
   // Validate the backend session is still alive
   try {
@@ -244,7 +260,7 @@ async function restoreSession() {
 
     // If editorContent differs from originalValue, mark as changed
     if (saved.editorContent && JSON.stringify(saved.editorContent) !== JSON.stringify(originalValue)) {
-      document.getElementById("btnReview").disabled = false;
+      setReviewEnabled(true);
       document.getElementById("editorStatus").textContent = "Unsaved changes (restored from session)";
       setStatus("editorMainStatus", "Your unsaved changes have been restored.", "warning");
     }
@@ -256,6 +272,38 @@ async function restoreSession() {
   loadEcsServices();
 
   setStatus("envStatus", "Session restored. Environment re-selected.", "success");
+  return true;
+}
+
+/** Local mode has no backend session to validate — just rehydrate the editor. */
+function restoreLocalSession(saved) {
+  localSourceValue = saved.localSourceValue ?? null;
+  originalValue = saved.originalValue ?? null;
+
+  if (localSourceValue) {
+    document.getElementById("localInput").value = localSourceValue;
+    document.getElementById("btnLocalDecode").disabled = false;
+  }
+
+  const valueToLoad = saved.editorContent ?? originalValue;
+  if (!valueToLoad) return false;
+
+  initEditor(valueToLoad);
+  markStepDone("Local");
+  openStep("step3");
+  invalidateLocalOutput();
+
+  if (
+    saved.editorContent &&
+    JSON.stringify(saved.editorContent) !== JSON.stringify(originalValue)
+  ) {
+    setReviewEnabled(true);
+    document.getElementById("editorStatus").textContent =
+      "Unsaved changes (restored from session)";
+    setStatus("editorMainStatus", "Your unsaved changes have been restored.", "warning");
+  }
+
+  setStatus("localStatus", "Value restored from your previous session.", "success");
   return true;
 }
 
@@ -282,6 +330,136 @@ function openStep(stepId) {
 
 function markStepDone(num) {
   document.getElementById(`step${num}-num`).classList.add("done");
+}
+
+// ── Mode: AWS (live secret) vs Local (offline base64) ─────────────────
+function isLocal() {
+  return mode === MODE_LOCAL;
+}
+
+const MODE_DESCRIPTIONS = {
+  [MODE_AWS]: "Connect through AWS SSO to read and update the live secret.",
+  [MODE_LOCAL]:
+    "Paste a base64 value, edit it, and copy the re-encoded result. " +
+    "Nothing leaves your browser and no AWS credentials are needed.",
+};
+
+function applyMode() {
+  const local = isLocal();
+
+  for (const el of document.querySelectorAll(".aws-only")) {
+    el.classList.toggle("hidden", local);
+  }
+  for (const el of document.querySelectorAll(".local-only")) {
+    el.classList.toggle("hidden", !local);
+  }
+
+  document.getElementById("modeOptionAws").classList.toggle("active", !local);
+  document.getElementById("modeOptionLocal").classList.toggle("active", local);
+  document.querySelector(`input[name="appMode"][value="${mode}"]`).checked = true;
+  document.getElementById("modeDescription").textContent = MODE_DESCRIPTIONS[mode];
+
+  // Step numbering differs: AWS is 1-SSO 2-Env 3-Edit 4-Restart,
+  // local is just 1-Paste 2-Edit.
+  document.getElementById("step3-num").textContent = local ? "2" : "3";
+
+  const badge = document.getElementById("envBadge");
+  const sessionBadge = document.getElementById("sessionBadge");
+  if (local) {
+    badge.textContent = "local";
+    badge.className = "env-badge local";
+    sessionBadge.classList.remove("hidden");
+  } else if (currentEnvName) {
+    badge.textContent = currentEnvName;
+    badge.className = `env-badge ${currentEnvName}`;
+    sessionBadge.classList.remove("hidden");
+  } else {
+    sessionBadge.classList.add("hidden");
+  }
+}
+
+/** Reset everything that belongs to the mode we are leaving. */
+function resetForModeSwitch() {
+  stopEcsPolling();
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  if (editor) {
+    editor.destroy();
+    editor = null;
+  }
+  document.getElementById("jsoneditor").innerHTML = "";
+
+  originalValue = null;
+  localSourceValue = null;
+  ecsServices = [];
+  selectedEcsServices = [];
+  selectedVersions = [];
+  versionsData = [];
+
+  setReviewEnabled(false);
+  document.getElementById("editorStatus").textContent = "";
+  document.getElementById("localInput").value = "";
+  document.getElementById("btnLocalDecode").disabled = true;
+  document.getElementById("localOutputValue").value = "";
+  document.getElementById("btnLocalCopy").disabled = true;
+  document.getElementById("localOutputInfo").textContent = "";
+
+  for (const id of [
+    "ssoStatus",
+    "envStatus",
+    "editorMainStatus",
+    "ecsStatus",
+    "localStatus",
+    "localOutputStatus",
+  ]) {
+    clearStatus(id);
+  }
+
+  for (const num of [1, 2, 3, 4]) {
+    document.getElementById(`step${num}-num`).classList.remove("done");
+  }
+  document.getElementById("stepLocal-num").classList.remove("done");
+
+  for (const id of ["step2", "step3", "step4"]) {
+    document.getElementById(id).classList.remove("open");
+  }
+  document.getElementById("step1").classList.add("open");
+  document.getElementById("stepLocal").classList.add("open");
+}
+
+window.setMode = function (newMode) {
+  if (newMode === mode) return;
+
+  if (hasUnsavedChanges() && !confirm(
+    "You have unsaved changes in the editor. Switching mode will discard them. Continue?"
+  )) {
+    // Revert the radio the user just clicked
+    document.querySelector(`input[name="appMode"][value="${mode}"]`).checked = true;
+    return;
+  }
+
+  mode = newMode;
+  resetForModeSwitch();
+  applyMode();
+  saveSession();
+};
+
+function hasUnsavedChanges() {
+  if (!editor || originalValue === null) return false;
+  try {
+    return JSON.stringify(getEditorValue()) !== JSON.stringify(originalValue);
+  } catch {
+    return true;
+  }
+}
+
+/** The "Review Changes" button differs per mode; drive both from one place. */
+function setReviewEnabled(enabled) {
+  document.getElementById("btnReview").disabled = !enabled;
+  document.getElementById("btnLocalDiff").disabled = !enabled;
 }
 
 // ── Step 1: SSO Connection ─────────────────────────────────────────────
@@ -474,16 +652,17 @@ function initEditor(value) {
       statusBar: true,
       onChange: (content) => {
         const hasChanges = detectChanges(content);
-        document.getElementById("btnReview").disabled = !hasChanges;
+        setReviewEnabled(hasChanges);
         document.getElementById("editorStatus").textContent = hasChanges
           ? "Unsaved changes"
           : "No changes";
+        if (isLocal()) invalidateLocalOutput();
         debouncedSaveSession();
       },
     },
   });
 
-  document.getElementById("btnReview").disabled = true;
+  setReviewEnabled(false);
   document.getElementById("editorStatus").textContent = "No changes";
 }
 
@@ -519,6 +698,118 @@ window.collapseAll = function () {
   if (editor) editor.expand(() => false);
 };
 
+// ── Local mode: base64 in / base64 out ────────────────────────────────
+window.onLocalInputChange = function () {
+  const value = document.getElementById("localInput").value.trim();
+  document.getElementById("btnLocalDecode").disabled = value.length === 0;
+  if (value.length === 0) clearStatus("localStatus");
+};
+
+window.clearLocalValue = function () {
+  document.getElementById("localInput").value = "";
+  document.getElementById("btnLocalDecode").disabled = true;
+  clearStatus("localStatus");
+};
+
+window.decodeLocalValue = function () {
+  const raw = document.getElementById("localInput").value;
+
+  let value;
+  try {
+    value = decodeSettings(raw);
+  } catch (err) {
+    setStatus("localStatus", err.message, "error");
+    return;
+  }
+
+  if (value === null || typeof value !== "object") {
+    setStatus(
+      "localStatus",
+      "The decoded value is valid JSON but not an object — the editor expects " +
+        "an ALL_ORGANIZATIONS_SETTINGS object.",
+      "error"
+    );
+    return;
+  }
+
+  localSourceValue = raw.trim().replace(/\s+/g, "");
+  originalValue = JSON.parse(JSON.stringify(value));
+
+  initEditor(value);
+  markStepDone("Local");
+  openStep("step3");
+
+  invalidateLocalOutput();
+  clearStatus("editorMainStatus");
+
+  // Re-encoding without any edit is only lossless if the source was already in
+  // canonical form. Warn up-front rather than at copy time.
+  const roundTripped = encodeSettings(value);
+  if (roundTripped === localSourceValue) {
+    setStatus("localStatus", "Value decoded. Round-trip is lossless.", "success");
+  } else {
+    setStatus(
+      "localStatus",
+      "Value decoded. Note: re-encoding normalizes formatting, so the output " +
+        "will differ from your input even without edits (the decoded JSON is " +
+        "unchanged).",
+      "warning"
+    );
+  }
+
+  document.getElementById("step3").scrollIntoView({ behavior: "smooth", block: "start" });
+  saveSession();
+};
+
+function invalidateLocalOutput() {
+  document.getElementById("localOutputValue").value = "";
+  document.getElementById("btnLocalCopy").disabled = true;
+  document.getElementById("localOutputInfo").textContent = "Not generated yet";
+  clearStatus("localOutputStatus");
+}
+
+window.encodeLocalValue = function () {
+  let value;
+  try {
+    value = getEditorValue();
+  } catch (err) {
+    setStatus("localOutputStatus", `Invalid JSON: ${err.message}`, "error");
+    return;
+  }
+
+  const encoded = encodeSettings(value);
+  document.getElementById("localOutputValue").value = encoded;
+  document.getElementById("btnLocalCopy").disabled = false;
+  document.getElementById("localOutputInfo").textContent = `${encoded.length} characters`;
+
+  if (localSourceValue && encoded === localSourceValue) {
+    setStatus("localOutputStatus", "Identical to the value you pasted.", "info");
+  } else {
+    clearStatus("localOutputStatus");
+  }
+
+  markStepDone(3);
+};
+
+window.copyLocalOutput = async function () {
+  const encoded = document.getElementById("localOutputValue").value;
+  if (!encoded) return;
+
+  try {
+    await navigator.clipboard.writeText(encoded);
+    setStatus("localOutputStatus", "Copied to clipboard.", "success");
+  } catch {
+    // Clipboard API needs a secure context — fall back to manual selection
+    const area = document.getElementById("localOutputValue");
+    area.select();
+    setStatus(
+      "localOutputStatus",
+      "Clipboard unavailable — the value is selected, press Ctrl/Cmd+C.",
+      "warning"
+    );
+  }
+};
+
 // ── Diff & Save Flow ──────────────────────────────────────────────────
 window.reviewChanges = function () {
   let newValue;
@@ -532,9 +823,11 @@ window.reviewChanges = function () {
   const diff = generateDiff(originalValue, newValue);
   document.getElementById("diffContent").innerHTML = diff;
 
-  const diffBadge = document.getElementById("diffEnvBadge");
-  diffBadge.textContent = currentEnvName;
-  diffBadge.className = `env-badge ${currentEnvName}`;
+  if (!isLocal()) {
+    const diffBadge = document.getElementById("diffEnvBadge");
+    diffBadge.textContent = currentEnvName;
+    diffBadge.className = `env-badge ${currentEnvName}`;
+  }
 
   document.getElementById("diffModal").classList.add("active");
 };
@@ -587,7 +880,7 @@ window.finalSave = async function () {
 
     closeConfirmModal();
     originalValue = JSON.parse(JSON.stringify(newValue));
-    document.getElementById("btnReview").disabled = true;
+    setReviewEnabled(false);
     document.getElementById("editorStatus").textContent = "No changes";
 
     setStatus(
@@ -823,7 +1116,7 @@ window.restoreVersion = function () {
 
   editor.set({ json: JSON.parse(JSON.stringify(versionToRestore)) });
   closeVersionModal();
-  document.getElementById("btnReview").disabled = false;
+  setReviewEnabled(true);
   document.getElementById("editorStatus").textContent = "Unsaved changes (restored from version)";
   setStatus("editorMainStatus", "Version content loaded into editor. Review and save when ready.", "warning");
 };
@@ -1215,11 +1508,9 @@ function escapeHtml(str) {
 
 // ── Init ───────────────────────────────────────────────────────────────
 async function init() {
+  applyMode();
   await loadProfiles();
-  const restored = await restoreSession();
-  if (!restored) {
-    // Fresh start — step 1 is already open by default
-  }
+  await restoreSession();
 }
 
 init();
