@@ -1,7 +1,10 @@
 import {
   JSONEditor,
 } from "https://cdn.jsdelivr.net/npm/vanilla-jsoneditor@2/standalone.js";
-import { decodeSettings, encodeSettings } from "./secretCodec.js";
+import {
+  decodeStoredSettings,
+  encodeStoredSettings,
+} from "./secretCodec.js";
 
 // ── State ──────────────────────────────────────────────────────────────
 const MODE_AWS = "aws";
@@ -13,7 +16,8 @@ let currentProfileName = null;
 let currentEnvId = null;
 let currentEnvName = null;
 let originalValue = null; // The value as loaded from AWS (or pasted, in local mode)
-let localSourceValue = null; // The exact base64 string pasted in local mode
+let localSourceValue = null; // The exact string pasted in local mode
+let localSourceEncoding = "base64"; // "base64" | "plain" — preserved on output
 let editor = null;
 let versionViewerEditor = null;
 let versionToRestore = null;
@@ -153,6 +157,7 @@ async function saveSession() {
       currentEnvName,
       originalValue,
       localSourceValue,
+      localSourceEncoding,
       editorContent,
       timestamp: Date.now(),
     };
@@ -278,6 +283,7 @@ async function restoreSession() {
 /** Local mode has no backend session to validate — just rehydrate the editor. */
 function restoreLocalSession(saved) {
   localSourceValue = saved.localSourceValue ?? null;
+  localSourceEncoding = saved.localSourceEncoding ?? "base64";
   originalValue = saved.originalValue ?? null;
 
   if (localSourceValue) {
@@ -394,6 +400,7 @@ function resetForModeSwitch() {
 
   originalValue = null;
   localSourceValue = null;
+  localSourceEncoding = "base64";
   ecsServices = [];
   selectedEcsServices = [];
   selectedVersions = [];
@@ -715,8 +722,9 @@ window.decodeLocalValue = function () {
   const raw = document.getElementById("localInput").value;
 
   let value;
+  let encoding;
   try {
-    value = decodeSettings(raw);
+    ({ value, encoding } = decodeStoredSettings(raw));
   } catch (err) {
     setStatus("localStatus", err.message, "error");
     return;
@@ -732,7 +740,9 @@ window.decodeLocalValue = function () {
     return;
   }
 
-  localSourceValue = raw.trim().replace(/\s+/g, "");
+  localSourceEncoding = encoding;
+  localSourceValue =
+    encoding === "plain" ? raw.trim() : raw.trim().replace(/\s+/g, "");
   originalValue = JSON.parse(JSON.stringify(value));
 
   initEditor(value);
@@ -744,7 +754,7 @@ window.decodeLocalValue = function () {
 
   // Re-encoding without any edit is only lossless if the source was already in
   // canonical form. Warn up-front rather than at copy time.
-  const roundTripped = encodeSettings(value);
+  const roundTripped = encodeStoredSettings(value, localSourceEncoding);
   if (roundTripped === localSourceValue) {
     setStatus("localStatus", "Value decoded. Round-trip is lossless.", "success");
   } else {
@@ -777,7 +787,7 @@ window.encodeLocalValue = function () {
     return;
   }
 
-  const encoded = encodeSettings(value);
+  const encoded = encodeStoredSettings(value, localSourceEncoding);
   document.getElementById("localOutputValue").value = encoded;
   document.getElementById("btnLocalCopy").disabled = false;
   document.getElementById("localOutputInfo").textContent = `${encoded.length} characters`;

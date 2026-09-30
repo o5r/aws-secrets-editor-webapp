@@ -11,8 +11,9 @@ import {
 import { getSsoSession } from "./sessionStore";
 import { getEnvironment } from "./envConfig";
 import {
-  decodeBase64Value,
-  encodeSettings,
+  decodeStoredSettings,
+  encodeStoredSettings,
+  detectSettingsEncoding,
   serializeSettings,
 } from "../shared/secretCodec";
 
@@ -98,8 +99,8 @@ export async function loadSecret(
     );
   }
 
-  // The stored value is a base64-encoded JSON string
-  const value = JSON.parse(decodeBase64Value(rawValue));
+  // Depending on the account the value is either base64-encoded or plain JSON.
+  const { value } = decodeStoredSettings(rawValue);
 
   return {
     value,
@@ -132,9 +133,13 @@ export async function saveSecret(
 
   const fullSecret = parseFullSecret(currentRes.SecretString);
 
-  // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else.
-  // Value is stored as base64-encoded JSON string.
-  fullSecret[SECRET_KEY] = encodeSettings(newValue);
+  // Replace only ALL_ORGANIZATIONS_SETTINGS, keep everything else. Re-use the
+  // encoding the secret already uses so an edit never migrates the storage
+  // format behind the back of the services reading it.
+  const current = fullSecret[SECRET_KEY];
+  const encoding =
+    current !== undefined ? detectSettingsEncoding(current) : "base64";
+  fullSecret[SECRET_KEY] = encodeStoredSettings(newValue, encoding);
 
   const res = await client.send(
     new PutSecretValueCommand({
@@ -223,7 +228,7 @@ export async function loadVersion(
   // If the key doesn't exist in this version, return null
   // (older versions may have a different structure)
   const value =
-    rawValue !== undefined ? JSON.parse(decodeBase64Value(rawValue)) : null;
+    rawValue !== undefined ? decodeStoredSettings(rawValue).value : null;
 
   return {
     value,

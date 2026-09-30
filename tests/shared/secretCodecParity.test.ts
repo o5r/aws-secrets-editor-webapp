@@ -70,3 +70,33 @@ describe("browser/node codec parity", () => {
       .toEqual({ a: 1 });
   });
 });
+
+describe("browser/node stored-encoding parity", () => {
+  const plain = '{"contractualObject":"ENT-Cr\\u00e9ation d\\u0027entreprise"}';
+
+  it("detects the same encoding", () => {
+    for (const raw of [plain, b64('{"a":1}'), "[]", "  [1,2] "]) {
+      expect(browser.detectSettingsEncoding(raw)).toBe(
+        node.detectSettingsEncoding(raw)
+      );
+    }
+  });
+
+  it("decodes stored values identically", () => {
+    for (const raw of [plain, b64('{"a":1}')]) {
+      expect(browser.decodeStoredSettings(raw)).toEqual(
+        node.decodeStoredSettings(raw)
+      );
+    }
+  });
+
+  it("re-encodes stored values identically", () => {
+    for (const sample of SAMPLES) {
+      for (const encoding of ["plain", "base64"] as const) {
+        expect(browser.encodeStoredSettings(sample, encoding)).toBe(
+          node.encodeStoredSettings(sample, encoding)
+        );
+      }
+    }
+  });
+});

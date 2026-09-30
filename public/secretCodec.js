@@ -16,12 +16,23 @@
  * control characters).
  */
 export function decodeUnicodeEscapes(jsonString) {
-  return jsonString.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+  // Match the whole run of backslashes preceding `uXXXX`. Only an odd-length
+  // run means the trailing backslash actually starts an escape sequence; an
+  // even-length run is made of escaped literal backslashes (e.g. the value
+  // contained the text `\u00e9`), and rewriting it would produce broken JSON.
+  return jsonString.replace(/(\\+)u([0-9a-fA-F]{4})/g, (match, slashes, hex) => {
+    if (slashes.length % 2 === 0) {
+      return match;
+    }
     const code = parseInt(hex, 16);
     if (code <= 0x1f || code === 0x22 || code === 0x5c) {
       return match;
     }
-    return String.fromCodePoint(code);
+    // Lone surrogates cannot be represented as UTF-8 text; leave them escaped.
+    if (code >= 0xd800 && code <= 0xdfff) {
+      return match;
+    }
+    return slashes.slice(0, -1) + String.fromCodePoint(code);
   });
 }
 
@@ -78,4 +89,39 @@ export function decodeSettings(encoded) {
 /** Full encode pipeline: parsed JSON value -> base64. */
 export function encodeSettings(value) {
   return encodeBase64Value(serializeSettings(value));
+}
+
+/**
+ * How ALL_ORGANIZATIONS_SETTINGS is stored in a given secret: older accounts
+ * keep it as a plain JSON string, newer ones base64-encode it. Base64 output
+ * never starts with `{` or `[`, so a leading JSON opener is an unambiguous
+ * marker of the plain form.
+ */
+export function detectSettingsEncoding(raw) {
+  const trimmed = (raw || "").trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[") ? "plain" : "base64";
+}
+
+/** Decode a stored value in whichever form it uses, reporting the encoding. */
+export function decodeStoredSettings(raw) {
+  const encoding = detectSettingsEncoding(raw);
+
+  if (encoding === "plain") {
+    const trimmed = (raw || "").trim();
+    if (!trimmed) {
+      throw new Error("Value is empty");
+    }
+    try {
+      return { value: JSON.parse(trimmed), encoding };
+    } catch (err) {
+      throw new Error(`Value is not valid JSON: ${err.message}`, { cause: err });
+    }
+  }
+
+  return { value: decodeSettings(raw), encoding };
+}
+
+/** Re-encode a value using the encoding it was originally stored with. */
+export function encodeStoredSettings(value, encoding) {
+  return encoding === "plain" ? serializeSettings(value) : encodeSettings(value);
 }

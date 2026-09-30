@@ -16,15 +16,29 @@
  * characters that MUST be escaped in JSON strings (" \ and control chars).
  */
 export function decodeUnicodeEscapes(jsonString: string): string {
-  return jsonString.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
-    const code = parseInt(hex, 16);
-    // Keep escapes for characters that must be escaped in JSON:
-    // " (0x22), \ (0x5C), and control characters (0x00-0x1F)
-    if (code <= 0x1f || code === 0x22 || code === 0x5c) {
-      return match;
+  // Match the whole run of backslashes preceding `uXXXX`. Only an odd-length
+  // run means the trailing backslash actually starts an escape sequence; an
+  // even-length run is made of escaped literal backslashes (e.g. the value
+  // contained the text `\u00e9`), and rewriting it would produce broken JSON.
+  return jsonString.replace(
+    /(\\+)u([0-9a-fA-F]{4})/g,
+    (match, slashes: string, hex: string) => {
+      if (slashes.length % 2 === 0) {
+        return match;
+      }
+      const code = parseInt(hex, 16);
+      // Keep escapes for characters that must be escaped in JSON:
+      // " (0x22), \ (0x5C), and control characters (0x00-0x1F)
+      if (code <= 0x1f || code === 0x22 || code === 0x5c) {
+        return match;
+      }
+      // Lone surrogates cannot be represented as UTF-8 text; leave them escaped.
+      if (code >= 0xd800 && code <= 0xdfff) {
+        return match;
+      }
+      return slashes.slice(0, -1) + String.fromCodePoint(code);
     }
-    return String.fromCodePoint(code);
-  });
+  );
 }
 
 /**
@@ -89,6 +103,61 @@ export function decodeSettings(encoded: string): unknown {
  */
 export function encodeSettings(value: unknown): string {
   return encodeBase64Value(serializeSettings(value));
+}
+
+/**
+ * How ALL_ORGANIZATIONS_SETTINGS is stored in a given secret. Older accounts
+ * (e.g. `production`) keep it as a plain JSON string; newer ones base64-encode
+ * it. Both must be supported, and — critically — the original form must be
+ * preserved on save so that editing one key never silently migrates the format
+ * for every consumer of the secret.
+ */
+export type SettingsEncoding = "base64" | "plain";
+
+/**
+ * Determine how a stored value is encoded. Base64 output never starts with `{`
+ * or `[`, so a leading JSON opener is an unambiguous marker of the plain form.
+ */
+export function detectSettingsEncoding(raw: string): SettingsEncoding {
+  const trimmed = raw.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[") ? "plain" : "base64";
+}
+
+/**
+ * Decode a stored value in whichever form it happens to use, reporting the
+ * encoding so the caller can round-trip it unchanged.
+ */
+export function decodeStoredSettings(raw: string): {
+  value: unknown;
+  encoding: SettingsEncoding;
+} {
+  const encoding = detectSettingsEncoding(raw);
+
+  if (encoding === "plain") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      throw new Error("Value is empty");
+    }
+    try {
+      return { value: JSON.parse(trimmed), encoding };
+    } catch (err) {
+      throw new Error(`Value is not valid JSON: ${(err as Error).message}`, {
+        cause: err,
+      });
+    }
+  }
+
+  return { value: decodeSettings(raw), encoding };
+}
+
+/** Re-encode a value using the encoding it was originally stored with. */
+export function encodeStoredSettings(
+  value: unknown,
+  encoding: SettingsEncoding
+): string {
+  return encoding === "plain"
+    ? serializeSettings(value)
+    : encodeSettings(value);
 }
 
 /** Strip whitespace and normalize padding so two base64 strings are comparable. */
